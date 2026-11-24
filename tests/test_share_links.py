@@ -12,6 +12,8 @@ from tests.test_singbox_config import _make_manager
 
 def test_share_links_and_offline_qr_generation(tmp_path: Path) -> None:
     cfg, db, mgr, _ = _make_manager(tmp_path, dry_run=True)
+    cfg.protocols[1].client.insecure = True
+    cfg.protocols[1].client.pin_sha256 = "AA:BB:CC:DD"
     mgr.sync_devices_from_config()
 
     device = db.get_device("owrt-router")
@@ -42,7 +44,10 @@ def test_share_links_and_offline_qr_generation(tmp_path: Path) -> None:
     assert parsed_h.scheme == "hysteria2"
     assert parsed_h.username == "pw-owrt"
     assert parsed_h.port == 8443
-    assert parse_qs(parsed_h.query)["sni"] == ["sg.example.com"]
+    hy2_qs = parse_qs(parsed_h.query)
+    assert hy2_qs["sni"] == ["sg.example.com"]
+    assert hy2_qs["insecure"] == ["1"]
+    assert hy2_qs["pinSHA256"] == ["AA:BB:CC:DD"]
 
     # Verify sing-box client JSON snippet parses cleanly
     client_json = json.loads(bundle["singbox_client_json"])

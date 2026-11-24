@@ -101,6 +101,7 @@ class ClientShareConfig:
     fingerprint: str = "chrome"
     flow: str = "xtls-rprx-vision"
     insecure: bool = False
+    pin_sha256: str = ""
     alpn: str = ""
     remark_prefix: str = ""
 
@@ -205,6 +206,7 @@ def _build_client_config(raw: dict[str, Any] | None) -> ClientShareConfig:
         fingerprint=str(raw.get("fingerprint", "chrome") or "chrome"),
         flow=str(raw.get("flow", "xtls-rprx-vision") or ""),
         insecure=bool(raw.get("insecure", False)),
+        pin_sha256=str(raw.get("pin_sha256", "") or ""),
         alpn=str(raw.get("alpn", "") or ""),
         remark_prefix=str(raw.get("remark_prefix", "") or ""),
     )
