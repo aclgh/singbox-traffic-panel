@@ -59,12 +59,13 @@ rm -rf "$WORK_DIR"
 git clone --depth 1 --branch "$GIT_TAG" https://github.com/SagerNet/sing-box.git "$WORK_DIR"
 
 cd "$WORK_DIR"
+read -r LDFLAGS_SHARED < release/LDFLAGS
 echo "==> 开始编译（不会影响运行中的 sing-box）..."
 CGO_ENABLED=0 go build \
   -v \
   -trimpath \
   -tags "$BUILD_TAGS" \
-  -ldflags "-X github.com/sagernet/sing-box/constant.Version=${VERSION#v} -s -w -buildid=" \
+  -ldflags "-X github.com/sagernet/sing-box/constant.Version=${VERSION#v} ${LDFLAGS_SHARED} -s -w -buildid=" \
   -o "$OUT_BIN" \
   ./cmd/sing-box
 
@@ -82,7 +83,11 @@ fi
 if [ -f "$SINGBOX_CONFIG" ]; then
   echo ""
   echo "==> 使用新二进制离线校验现有配置 ($SINGBOX_CONFIG)..."
-  "$OUT_BIN" check -c "$SINGBOX_CONFIG"
+  if [ -r "$SINGBOX_CONFIG" ]; then
+    "$OUT_BIN" check -c "$SINGBOX_CONFIG"
+  else
+    sudo -n "$OUT_BIN" check -c "$SINGBOX_CONFIG"
+  fi
   echo "[OK] 离线配置校验通过！"
 fi
 
