@@ -44,7 +44,10 @@ singbox:
   config_path: "/etc/sing-box/config.json"
   binary_path: "/usr/bin/sing-box"
   validate_before_reload: true
+  # 新增/恢复设备时平滑重载（不断开其他设备的现有连接）
   reload_command: "systemctl reload-or-restart sing-box"
+  # 吊销设备时强制重启以立刻踢掉被吊销设备的活跃长连接（留空则复用 reload_command）
+  revoke_reload_command: "systemctl restart sing-box"
   # 新增/吊销设备时自动同步更新 experimental.v2ray_api.stats.users
   sync_v2ray_api_users: true
   dry_run: false

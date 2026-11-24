@@ -87,6 +87,7 @@ class SingBoxConfig:
     binary_path: str = "sing-box"
     validate_before_reload: bool = True
     reload_command: str = "systemctl reload-or-restart sing-box"
+    revoke_reload_command: str = ""  # empty = fallback to reload_command; set e.g. 'systemctl restart sing-box' to immediately drop revoked connections
     sync_v2ray_api_users: bool = True
     dry_run: bool = False  # if True, skip external sing-box check/reload (useful for demo/tests)
 
@@ -281,6 +282,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         binary_path=str(sb_raw.get("binary_path", "sing-box")),
         validate_before_reload=bool(sb_raw.get("validate_before_reload", True)),
         reload_command=str(sb_raw.get("reload_command", "systemctl reload-or-restart sing-box")),
+        revoke_reload_command=str(sb_raw.get("revoke_reload_command", "") or ""),
         sync_v2ray_api_users=bool(sb_raw.get("sync_v2ray_api_users", True)),
         dry_run=bool(sb_raw.get("dry_run", False)),
     )

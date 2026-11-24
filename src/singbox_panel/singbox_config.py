@@ -40,7 +40,7 @@ def validate_device_name(name: str) -> str:
 class SingBoxConfigManager:
     """Safely reads and edits sing-box config.json without disturbing existing routing/TLS setup."""
 
-    def __init__(self, config: AppConfig, db: TrafficDatabase) -> None:
+    def __init__(self, config: AppConfig, db: TrafficDatabase | None = None) -> None:
         self.config = config
         self.db = db
         self._lock = threading.RLock()
@@ -349,10 +349,14 @@ class SingBoxConfigManager:
             err = (proc.stderr or proc.stdout or "").strip()
             raise SingBoxConfigError(f"sing-box check 校验未通过，已中止写入: {err}")
 
-    def _reload_singbox(self) -> str:
+    def _reload_singbox(self, *, command_override: str | None = None) -> str:
         if self.config.singbox.dry_run:
             return "dry-run (skipped reload)"
-        reload_cmd = self.config.singbox.reload_command.strip()
+        reload_cmd = (
+            command_override.strip()
+            if command_override and command_override.strip()
+            else self.config.singbox.reload_command.strip()
+        )
         if not reload_cmd:
             return "no reload_command configured"
         argv = shlex.split(reload_cmd)
@@ -374,15 +378,40 @@ class SingBoxConfigManager:
             raise SingBoxConfigError(f"sing-box 重载失败 (exit={proc.returncode}): {err}")
         return (proc.stdout or "reloaded").strip() or "reloaded"
 
-    def _apply_config_safely(self, updated_cfg: dict[str, Any]) -> tuple[Path, str]:
-        """Backup -> write temp -> sing-box check -> atomic replace -> reload (with rollback)."""
+    @staticmethod
+    def _restore_file_metadata(
+        path: Path, mode: int | None, uid: int | None, gid: int | None
+    ) -> None:
+        if mode is not None:
+            try:
+                os.chmod(path, mode)
+            except OSError:
+                pass
+        if uid is not None and gid is not None and hasattr(os, "chown"):
+            try:
+                os.chown(path, uid, gid)
+            except OSError:
+                pass
+
+    def _apply_config_safely(
+        self,
+        updated_cfg: dict[str, Any],
+        *,
+        reload_command_override: str | None = None,
+    ) -> tuple[Path, str]:
+        """Backup -> write temp -> preserve mode & uid:gid -> sing-box check -> atomic replace -> reload (with rollback)."""
         backup_path = self._create_backup()
         serialized = json.dumps(updated_cfg, indent=2, ensure_ascii=False) + "\n"
 
-        # Preserve original file permissions if available
-        orig_mode = None
+        # Preserve original file permissions AND uid:gid (critical when sing-box runs as User=sing-box on 0600 config!)
+        orig_mode: int | None = None
+        orig_uid: int | None = None
+        orig_gid: int | None = None
         try:
-            orig_mode = self.config_path.stat().st_mode & 0o777
+            st = self.config_path.stat()
+            orig_mode = st.st_mode & 0o777
+            orig_uid = st.st_uid
+            orig_gid = st.st_gid
         except OSError:
             pass
 
@@ -395,14 +424,11 @@ class SingBoxConfigManager:
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
                 fh.write(serialized)
-            if orig_mode is not None:
-                try:
-                    os.chmod(tmp_path, orig_mode)
-                except OSError:
-                    pass
+            self._restore_file_metadata(tmp_path, orig_mode, orig_uid, orig_gid)
 
             self._validate_candidate_file(tmp_path)
             os.replace(tmp_path, self.config_path)
+            self._restore_file_metadata(self.config_path, orig_mode, orig_uid, orig_gid)
         except Exception:
             if tmp_path.exists():
                 try:
@@ -412,10 +438,11 @@ class SingBoxConfigManager:
             raise
 
         try:
-            reload_msg = self._reload_singbox()
+            reload_msg = self._reload_singbox(command_override=reload_command_override)
         except Exception:
-            # Rollback live config immediately if reload failed
+            # Rollback live config immediately AND restore original mode + uid:gid
             shutil.copy2(backup_path, self.config_path)
+            self._restore_file_metadata(self.config_path, orig_mode, orig_uid, orig_gid)
             raise
 
         return backup_path, reload_msg
@@ -591,7 +618,10 @@ class SingBoxConfigManager:
             self._sync_v2ray_stats_user(updated, clean_name, present=False)
 
             try:
-                backup_path, reload_msg = self._apply_config_safely(updated)
+                backup_path, reload_msg = self._apply_config_safely(
+                    updated,
+                    reload_command_override=self.config.singbox.revoke_reload_command or None,
+                )
             except Exception as exc:
                 self.db.append_audit_log("device.revoke", clean_name, str(exc), success=False)
                 raise

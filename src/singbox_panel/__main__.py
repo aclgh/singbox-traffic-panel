@@ -15,7 +15,6 @@ import uvicorn
 from .app import create_app
 from .collectors.grpc_v2ray import V2RayStatsClient
 from .config import AppConfig, load_config
-from .db import TrafficDatabase
 from .singbox_config import SingBoxConfigManager
 
 
@@ -160,8 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.check_config:
-        db = TrafficDatabase(cfg.storage.db_path, config=cfg)
-        mgr = SingBoxConfigManager(cfg, db)
+        mgr = SingBoxConfigManager(cfg, db=None)
         health = mgr.inspect_config_health()
         print(json.dumps(health, indent=2, ensure_ascii=False))
         return 0 if health.get("exists") and not health.get("error") else 1

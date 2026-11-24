@@ -152,3 +152,35 @@ def test_reload_failure_rolls_back_config_from_backup(tmp_path: Path) -> None:
 
     # Live config MUST be rolled back to exact pre-edit contents!
     assert sb_path.read_text(encoding="utf-8") == before_text
+
+
+def test_apply_and_rollback_preserve_file_ownership_and_revoke_uses_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    cfg, _, mgr, sb_path = _make_manager(tmp_path, dry_run=False)
+    cfg.singbox.binary_path = "/usr/bin/true"
+    cfg.singbox.validate_before_reload = True
+    cfg.singbox.reload_command = "/usr/bin/true"
+    cfg.singbox.revoke_reload_command = "/usr/bin/false"
+
+    chown_calls: list[tuple[str, int, int]] = []
+    real_stat = sb_path.stat()
+
+    def fake_chown(path, uid, gid):
+        chown_calls.append((str(path), uid, gid))
+
+    monkeypatch.setattr(os, "chown", fake_chown)
+
+    # 1. Add device succeeds and preserves uid:gid via os.chown
+    mgr.add_device(name="owner-check")
+    assert any(uid == real_stat.st_uid and gid == real_stat.st_gid for _, uid, gid in chown_calls)
+
+    # 2. Revoke uses revoke_reload_command (/usr/bin/false), rolls back config, and restores uid:gid
+    chown_calls.clear()
+    with pytest.raises(SingBoxConfigError, match="重载失败"):
+        mgr.revoke_device("owner-check")
+    assert any(p == str(sb_path) and uid == real_stat.st_uid and gid == real_stat.st_gid for p, uid, gid in chown_calls)
+    # Rolled back: owner-check is still in config.json
+    assert "owner-check" in sb_path.read_text(encoding="utf-8")

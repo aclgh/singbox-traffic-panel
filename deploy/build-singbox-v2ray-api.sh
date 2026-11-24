@@ -59,7 +59,10 @@ rm -rf "$WORK_DIR"
 git clone --depth 1 --branch "$GIT_TAG" https://github.com/SagerNet/sing-box.git "$WORK_DIR"
 
 cd "$WORK_DIR"
-read -r LDFLAGS_SHARED < release/LDFLAGS
+LDFLAGS_SHARED=""
+if [ -f release/LDFLAGS ]; then
+  read -r LDFLAGS_SHARED < release/LDFLAGS
+fi
 echo "==> 开始编译（不会影响运行中的 sing-box）..."
 CGO_ENABLED=0 go build \
   -v \
