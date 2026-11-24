@@ -59,13 +59,15 @@ bash deploy/check-singbox-tags.sh /usr/bin/sing-box
 sing-box check -c /etc/sing-box/config.json && systemctl reload-or-restart sing-box
 ```
 
-### 2. 安装后台服务
+### 2. 安装后台服务（默认原地安装在当前仓库目录）
 
 ```bash
 sudo bash deploy/install.sh
 ```
 
-编辑 `/opt/singbox-traffic-panel/config/panel.yaml`，按你的实际配置修改：
+脚本会自动检测并补装缺失的 `python3-venv`，在当前仓库目录创建 `.venv` 并生成指向当前目录的 `systemd` 服务（如需安装到其他目录可通过 `APP_DIR=/opt/singbox-traffic-panel sudo -E bash deploy/install.sh` 指定）。
+
+编辑 `config/panel.yaml`，按你的实际配置修改：
 
 - `collector.source`：`v2ray_api`、`clash_api` 或 `auto`
 - `protocols[*].inbound_tag`：与 `/etc/sing-box/config.json` 中 VLESS / Hysteria2 入站的 `tag` 对齐
@@ -75,8 +77,7 @@ sudo bash deploy/install.sh
 检查兼容性并启动：
 
 ```bash
-/opt/singbox-traffic-panel/.venv/bin/python -m singbox_panel \
-  --config /opt/singbox-traffic-panel/config/panel.yaml --check-config
+.venv/bin/python -m singbox_panel --config config/panel.yaml --check-config
 
 sudo systemctl enable --now singbox-traffic-panel
 sudo systemctl status singbox-traffic-panel
