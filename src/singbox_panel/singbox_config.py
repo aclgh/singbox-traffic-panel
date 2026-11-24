@@ -148,6 +148,7 @@ class SingBoxConfigManager:
             "obfs_type": str(obfs.get("type") or ""),
             "obfs_password": str(obfs.get("password") or ""),
             "insecure": proto.client.insecure,
+            "pin_sha256": proto.client.pin_sha256,
             "alpn": proto.client.alpn,
             "remark_prefix": proto.client.remark_prefix or proto.label,
         }

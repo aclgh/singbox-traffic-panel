@@ -84,6 +84,8 @@ def build_hysteria2_uri(
         query.append(("sni", str(params["sni"])))
     if params.get("insecure"):
         query.append(("insecure", "1"))
+    if params.get("pin_sha256"):
+        query.append(("pinSHA256", str(params["pin_sha256"])))
     if params.get("alpn"):
         query.append(("alpn", str(params["alpn"])))
     if params.get("obfs_type"):

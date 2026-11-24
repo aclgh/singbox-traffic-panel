@@ -107,6 +107,8 @@ protocols:
       server_port: null
       sni: null
       insecure: false
+      # 如使用自签证书，可填写证书 SHA-256 指纹以生成 pinSHA256 参数
+      pin_sha256: ""
       alpn: ""
       remark_prefix: "SG-Hy2"
 
