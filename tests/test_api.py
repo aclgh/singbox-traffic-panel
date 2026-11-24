@@ -143,3 +143,41 @@ def test_end_to_end_dashboard_and_device_lifecycle_api(tmp_path: Path) -> None:
         assert "device.revoke" in actions
         assert "device.restore" in actions
         assert len(audit["backups"]) >= 3
+
+
+def test_modern_web_ui_invariants_and_zero_external_cdns() -> None:
+    static_dir = Path(__file__).resolve().parents[1] / "src" / "singbox_panel" / "static"
+    html = (static_dir / "index.html").read_text(encoding="utf-8")
+    css = (static_dir / "styles.css").read_text(encoding="utf-8")
+    js = (static_dir / "app.js").read_text(encoding="utf-8")
+
+    # Zero external CDN links/scripts (offline & credential-safe; allow XML svg namespace)
+    for asset in (html, css, js):
+        sanitized = asset.replace("http://www.w3.org/2000/svg", "")
+        assert "https://" not in sanitized
+        assert "http://" not in sanitized
+
+    # Native <dialog closedby="any"> without redundant role="dialog" / aria-modal
+    assert '<dialog id="modal-add"' in html
+    assert 'closedby="any"' in html
+    assert 'role="dialog"' not in html
+    assert "aria-modal" not in html
+
+    # Adaptive light/dark color-scheme + FOUC prevention
+    assert '<meta name="color-scheme" content="light dark"' in html
+    assert "color-scheme: light dark;" in css
+    assert "light-dark(" in css
+
+    # Modal scroll lock & top-layer transitions + separate progress pseudo-elements
+    assert "overscroll-behavior: contain;" in css
+    assert "transition-behavior: allow-discrete;" in css
+    assert "::-webkit-progress-value" in css
+    assert "::-moz-progress-bar" in css
+    assert "::-webkit-progress-value,\n" not in css
+    assert "color-mix(in oklch" not in css
+
+    # Sortable table + moveBefore + copy command + manual popover toasts
+    assert 'command="--sort"' in html
+    assert 'command="--copy"' in html
+    assert "moveBefore" in js
+    assert 'popover", "manual"' in js

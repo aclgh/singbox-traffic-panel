@@ -3,14 +3,17 @@
     range: "month",
     donutMode: "raw",
     dashboard: null,
+    sortKey: "total",
+    sortDir: "descending",
     pendingRevoke: null,
+    pendingDelete: null,
     qrBundle: null,
-    qrActiveTab: 0,
-    revealSecret: false,
     pollTimer: null,
+    dashboardAbort: null,
   };
 
   const $ = (id) => document.getElementById(id);
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -53,18 +56,678 @@
     return r === "today" ? "今日" : r === "month" ? "本月" : "累计";
   }
 
-  function showToast(message, type = "ok") {
-    const host = $("toast-container");
-    const el = document.createElement("div");
-    el.className = `toast ${type}`;
-    el.textContent = message;
-    host.appendChild(el);
-    setTimeout(() => {
-      el.style.opacity = "0";
-      el.style.transition = "opacity 0.25s ease";
-      setTimeout(() => el.remove(), 260);
-    }, 3400);
+  // --- Screen reader announcement helper (ariaNotify + pre-existing live region fallback) ---
+
+  let lastPoliteAnnouncement = "";
+
+  function announcePolite(message) {
+    if (!message) return;
+    if (typeof document.ariaNotify === "function") {
+      try {
+        document.ariaNotify(message);
+        return;
+      } catch {
+        // Fallback to live region below
+      }
+    }
+    const region = $("sr-live-announcer");
+    if (!region) return;
+    let text = message;
+    if (text === lastPoliteAnnouncement) text += "\u00A0";
+    lastPoliteAnnouncement = text;
+    region.textContent = "";
+    requestAnimationFrame(() => {
+      region.textContent = text;
+    });
   }
+
+  // --- Two-State Dark/Light Theme Toggle (modern-web-guidance/dark-mode-toggle) ---
+
+  const themeMeta = document.querySelector('meta[name="color-scheme"]');
+  const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
+  function getStoredTheme() {
+    try {
+      const val = localStorage.getItem("color-scheme");
+      return val === "light" || val === "dark" ? val : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function applyThemeMeta(stored) {
+    if (!themeMeta) return;
+    themeMeta.content = stored ?? "light dark";
+  }
+
+  $("btn-theme-toggle")?.addEventListener("click", () => {
+    const systemScheme = darkQuery.matches ? "dark" : "light";
+    const currentRendered = getStoredTheme() ?? systemScheme;
+    const target = currentRendered === "dark" ? "light" : "dark";
+
+    if (target === systemScheme) {
+      // Returning to match system preference: remove stored override so OS tracking resumes
+      try {
+        localStorage.removeItem("color-scheme");
+      } catch {}
+      applyThemeMeta(null);
+    } else {
+      try {
+        localStorage.setItem("color-scheme", target);
+      } catch {}
+      applyThemeMeta(target);
+    }
+  });
+
+  window.addEventListener("storage", (e) => {
+    if (e.key === "color-scheme") {
+      applyThemeMeta(e.newValue === "light" || e.newValue === "dark" ? e.newValue : null);
+    }
+  });
+
+  // --- Top-Layer Animation & Exit Fallback (modern-web-guidance/animate-to-from-top-layer) ---
+
+  let supportsDisplayTransitionCache;
+
+  function canTransitionDisplay() {
+    if (supportsDisplayTransitionCache !== undefined) return supportsDisplayTransitionCache;
+    if (!window.CSS?.supports?.("transition-behavior", "allow-discrete") || !document.body) {
+      return false;
+    }
+    const probe = document.createElement("div");
+    probe.style.cssText = "transition: display 1s allow-discrete !important; display: block;";
+    document.body.appendChild(probe);
+    getComputedStyle(probe).display;
+    probe.style.display = "none";
+    supportsDisplayTransitionCache = getComputedStyle(probe).display === "block";
+    probe.remove();
+    return supportsDisplayTransitionCache;
+  }
+
+  function supportsTopLayerExit() {
+    return Boolean(window.CSS?.supports?.("overlay", "auto") && canTransitionDisplay());
+  }
+
+  async function closeTopLayerDialog(dialog) {
+    if (!dialog || !dialog.open) return;
+    if (!supportsTopLayerExit()) {
+      dialog.setAttribute("data-closing", "");
+      const animations = dialog.getAnimations({ subtree: true });
+      if (animations.length > 0) {
+        await Promise.race([
+          Promise.allSettled(animations.map((a) => a.finished)),
+          new Promise((r) => setTimeout(r, 400)),
+        ]);
+      }
+      if (!dialog.hasAttribute("data-closing")) return;
+      dialog.removeAttribute("data-closing");
+    }
+    dialog.close();
+  }
+
+  function hasOpenModalDialog() {
+    return Boolean(document.querySelector("dialog[open]"));
+  }
+
+  function setupDialogs() {
+    const dialogs = document.querySelectorAll("dialog.panel-dialog");
+
+    // Reset returnValue on close & route cancel through exit animation fallback when needed
+    for (const dialog of dialogs) {
+      dialog.addEventListener("close", () => {
+        dialog.removeAttribute("data-closing");
+        dialog.returnValue = "";
+        flushQueuedToasts();
+      });
+
+      if (!supportsTopLayerExit()) {
+        dialog.addEventListener("cancel", (event) => {
+          event.preventDefault();
+          closeTopLayerDialog(dialog);
+        });
+      }
+    }
+
+    // Light-dismiss fallback for browsers without native closedby="any" (e.g. Safari)
+    if (!("closedBy" in HTMLDialogElement.prototype)) {
+      const outside = (e, dialog) => {
+        const r = dialog.getBoundingClientRect();
+        return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+      };
+      for (const dialog of document.querySelectorAll('dialog[closedby="any"]')) {
+        let pressedOutside = false;
+        dialog.addEventListener("pointerdown", (e) => {
+          pressedOutside = outside(e, dialog);
+        });
+        dialog.addEventListener("pointerup", (e) => {
+          if (pressedOutside && outside(e, dialog)) closeTopLayerDialog(dialog);
+          pressedOutside = false;
+        });
+      }
+    }
+
+    // Prepare Add Device form before opening via native Invoker Commands (command="show-modal")
+    const addDialog = $("modal-add");
+    addDialog?.addEventListener("command", (event) => {
+      if (event.command === "show-modal") {
+        prepareAddDeviceModal();
+      } else if (event.command === "close" && !supportsTopLayerExit()) {
+        event.preventDefault();
+        closeTopLayerDialog(addDialog);
+      }
+    });
+
+    for (const dialog of dialogs) {
+      if (dialog === addDialog) continue;
+      dialog.addEventListener("command", (event) => {
+        if (event.command === "close" && !supportsTopLayerExit()) {
+          event.preventDefault();
+          closeTopLayerDialog(dialog);
+        }
+      });
+    }
+
+    // Fallback for browsers without Invoker Commands (command="show-modal" / "close")
+    if (!("commandForElement" in HTMLButtonElement.prototype)) {
+      document.addEventListener("click", (event) => {
+        if (event.defaultPrevented) return;
+        const btn = event.target.closest('button[command="show-modal"], button[command="close"]');
+        if (!btn) return;
+        const target = document.getElementById(btn.getAttribute("commandfor") || "");
+        if (!(target instanceof HTMLDialogElement)) return;
+        if (btn.getAttribute("command") === "show-modal") {
+          if (target.id === "modal-add") prepareAddDeviceModal();
+          if (!target.open) target.showModal();
+        } else {
+          closeTopLayerDialog(target);
+        }
+      });
+    }
+  }
+
+  // --- Manual Popover Toasts (modern-web-guidance/persistent-toast-notifications) ---
+
+  const supportsPopover = Object.hasOwn(HTMLElement.prototype, "popover");
+  const activeToasts = [];
+  const queuedToasts = [];
+  let toastSeq = 0;
+
+  function layoutToasts() {
+    let offset = 0;
+    for (let i = activeToasts.length - 1; i >= 0; i -= 1) {
+      const entry = activeToasts[i];
+      entry.el.style.setProperty("--toast-offset", `${offset}px`);
+      const h = entry.el.getBoundingClientRect().height || 46;
+      offset += h + 10;
+    }
+  }
+
+  async function dismissToast(entry, { restoreFocus = false } = {}) {
+    const idx = activeToasts.indexOf(entry);
+    if (idx === -1) return;
+    clearTimeout(entry.timer);
+    activeToasts.splice(idx, 1);
+
+    const hadFocus = entry.el.contains(document.activeElement);
+    if (!supportsTopLayerExit() && supportsPopover) {
+      entry.el.setAttribute("data-closing", "");
+      const anims = entry.el.getAnimations({ subtree: true });
+      if (anims.length) {
+        await Promise.race([
+          Promise.allSettled(anims.map((a) => a.finished)),
+          new Promise((r) => setTimeout(r, 300)),
+        ]);
+      }
+      entry.el.removeAttribute("data-closing");
+    }
+
+    if (supportsPopover) {
+      try {
+        entry.el.hidePopover();
+      } catch {}
+    } else {
+      entry.el.classList.remove(":popover-open");
+    }
+    entry.el.remove();
+    layoutToasts();
+
+    if (restoreFocus && hadFocus) {
+      const next = activeToasts[Math.min(idx, activeToasts.length - 1)];
+      if (next) {
+        next.closeBtn.focus();
+      } else if (entry.prevFocus && document.contains(entry.prevFocus)) {
+        entry.prevFocus.focus({ preventScroll: true });
+      }
+    }
+  }
+
+  function scheduleToastAutoDismiss(entry, delayMs = 3800) {
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+      if (entry.el.matches(":focus-within") || entry.el.matches(":hover")) {
+        scheduleToastAutoDismiss(entry, 1500);
+        return;
+      }
+      dismissToast(entry);
+    }, delayMs);
+  }
+
+  function showToast(message, type = "ok") {
+    // Do not surface background toasts while a modal dialog is open; queue until dismissed
+    if (hasOpenModalDialog()) {
+      queuedToasts.push({ message, type });
+      return;
+    }
+
+    const region = $("toast-region");
+    if (!region) return;
+
+    toastSeq += 1;
+    const id = `panel-toast-${toastSeq}`;
+    const el = document.createElement("div");
+    el.id = id;
+    el.className = `toast-item ${type}`;
+    el.setAttribute("popover", "manual");
+
+    const textSpan = document.createElement("span");
+    textSpan.textContent = message;
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "toast-close";
+    closeBtn.setAttribute("popovertarget", id);
+    closeBtn.setAttribute("popovertargetaction", "hide");
+    closeBtn.setAttribute("aria-label", "关闭通知");
+    closeBtn.textContent = "×";
+
+    el.append(textSpan, closeBtn);
+    region.append(el);
+
+    const entry = {
+      el,
+      closeBtn,
+      timer: null,
+      prevFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+    };
+
+    closeBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      dismissToast(entry, { restoreFocus: true });
+    });
+
+    activeToasts.push(entry);
+    if (supportsPopover) {
+      el.showPopover();
+    } else {
+      el.classList.add(":popover-open");
+    }
+    layoutToasts();
+    announcePolite(message);
+    scheduleToastAutoDismiss(entry, type === "error" ? 5500 : 3600);
+  }
+
+  function flushQueuedToasts() {
+    if (hasOpenModalDialog() || !queuedToasts.length) return;
+    while (queuedToasts.length) {
+      const next = queuedToasts.shift();
+      showToast(next.message, next.type);
+    }
+  }
+
+  // --- Declarative Copy Buttons (modern-web-guidance/copy-button) ---
+
+  const copyTimers = new WeakMap();
+  let lastCopyAnnouncement = "";
+
+  function legacyCopy(text) {
+    const previousFocus = document.activeElement;
+    const field = Object.assign(document.createElement("textarea"), { value: text });
+    field.setAttribute("readonly", "");
+    field.style.cssText = "position:fixed;inset-block-start:0;opacity:0";
+    document.body.append(field);
+    field.select();
+    try {
+      return document.execCommand("copy");
+    } finally {
+      field.remove();
+      if (previousFocus instanceof HTMLElement) {
+        previousFocus.focus({ preventScroll: true });
+      }
+    }
+  }
+
+  function reportCopy(button, ok) {
+    const tip = button.nextElementSibling;
+    clearTimeout(copyTimers.get(button));
+    button.removeAttribute("data-copied");
+    button.removeAttribute("data-failed");
+
+    let message = ok ? "已复制" : "复制失败";
+    if (message === lastCopyAnnouncement) message += "\u00A0";
+    lastCopyAnnouncement = message;
+
+    if (tip) tip.textContent = "";
+    void button.offsetWidth;
+    button.setAttribute(ok ? "data-copied" : "data-failed", "");
+    if (tip) {
+      requestAnimationFrame(() => {
+        tip.textContent = message;
+      });
+    }
+
+    copyTimers.set(
+      button,
+      setTimeout(() => {
+        button.removeAttribute("data-copied");
+        button.removeAttribute("data-failed");
+        if (tip) tip.textContent = "";
+      }, 2000)
+    );
+  }
+
+  async function copyFromTarget(button, target) {
+    const raw =
+      target.dataset.copyValue !== undefined
+        ? target.dataset.copyValue
+        : target.matches("input, textarea")
+          ? target.value
+          : target.innerText.trim();
+    if (!raw) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(raw);
+      } else if (!legacyCopy(raw)) {
+        throw new Error("copy failed");
+      }
+      reportCopy(button, true);
+    } catch {
+      try {
+        if (!legacyCopy(raw)) throw new Error("copy failed");
+        reportCopy(button, true);
+      } catch {
+        reportCopy(button, false);
+      }
+    }
+  }
+
+  // Register only ONE path (CommandEvent OR fallback click) so copy never fires twice
+  if ("CommandEvent" in window) {
+    document.addEventListener(
+      "command",
+      (event) => {
+        if (event.command === "--copy" && event.source && event.target) {
+          copyFromTarget(event.source, event.target);
+        }
+      },
+      true
+    );
+  } else {
+    document.addEventListener("click", (event) => {
+      if (event.defaultPrevented) return;
+      const button = event.target.closest('button[command="--copy"]');
+      if (!button) return;
+      const target = document.getElementById(button.getAttribute("commandfor") || "");
+      if (target) copyFromTarget(button, target);
+    });
+  }
+
+  // --- Tabs Helper (focusgroup + offline keyboard roving-tabindex fallback) ---
+
+  const supportsFocusgroup = Object.hasOwn(HTMLElement.prototype, "focusGroup");
+
+  function syncTabSelection(tablist, selectedTab) {
+    const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+    for (const tab of tabs) {
+      const isSelected = tab === selectedTab;
+      tab.setAttribute("aria-selected", String(isSelected));
+      tab.toggleAttribute("focusgroupstart", isSelected);
+      if (!supportsFocusgroup) {
+        tab.tabIndex = isSelected ? 0 : -1;
+      }
+    }
+    try {
+      selectedTab.scrollIntoView({ block: "nearest", inline: "nearest", container: "nearest" });
+    } catch {
+      selectedTab.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }
+
+  function wireTablistKeyboard(tablist, onSelect, { followFocus = true } = {}) {
+    const tabs = () => Array.from(tablist.querySelectorAll('[role="tab"]'));
+    const initial = tabs().find((t) => t.getAttribute("aria-selected") === "true") || tabs()[0];
+    if (initial) syncTabSelection(tablist, initial);
+
+    tablist.addEventListener("click", (e) => {
+      const tab = e.target.closest('[role="tab"]');
+      if (!tab) return;
+      syncTabSelection(tablist, tab);
+      onSelect(tab);
+    });
+
+    tablist.addEventListener("keydown", (e) => {
+      if (supportsFocusgroup) return;
+      const list = tabs();
+      if (!list.length) return;
+      const idx = list.indexOf(document.activeElement);
+      if (idx === -1) return;
+
+      let nextIdx = idx;
+      if (e.key === "ArrowRight") nextIdx = (idx + 1) % list.length;
+      else if (e.key === "ArrowLeft") nextIdx = (idx - 1 + list.length) % list.length;
+      else if (e.key === "Home") nextIdx = 0;
+      else if (e.key === "End") nextIdx = list.length - 1;
+      else return;
+
+      e.preventDefault();
+      list[nextIdx].focus();
+    });
+
+    if (followFocus) {
+      tablist.addEventListener("focusin", (e) => {
+        const tab = e.target.closest('[role="tab"]');
+        if (!tab || tab.getAttribute("aria-selected") === "true") return;
+        syncTabSelection(tablist, tab);
+        onSelect(tab);
+      });
+    }
+  }
+
+  // --- Deferred Form Validation & ARIA Sync (modern-web-guidance/validate-input-after-interaction) ---
+
+  function setupFormValidationSync(form) {
+    if (!form) return;
+    const supportsUserInvalid = CSS.supports("selector(:user-invalid)");
+    const dirtyState = new WeakMap();
+    const flagged = new WeakSet();
+    const announced = new WeakSet();
+    let announceTimer = null;
+
+    const linkError = (el, shown) => {
+      const errorId = el.dataset.error;
+      if (!errorId) return;
+      const ids = (el.getAttribute("aria-describedby") || "")
+        .split(/\s+/)
+        .filter((id) => id && id !== errorId);
+      if (shown) ids.push(errorId);
+      if (ids.length) el.setAttribute("aria-describedby", ids.join(" "));
+      else el.removeAttribute("aria-describedby");
+    };
+
+    const announceFieldError = (el) => {
+      const errEl = document.getElementById(el.dataset.error || "");
+      if (!errEl) return;
+      clearTimeout(announceTimer);
+      announceTimer = setTimeout(() => {
+        announcePolite(errEl.textContent.replace(/\s+/g, " ").trim());
+      }, 450);
+    };
+
+    const syncAria = (el, shouldAnnounce = false) => {
+      if (!el.matches?.("input, select, textarea")) return;
+      const invalid = supportsUserInvalid
+        ? el.matches(":user-invalid")
+        : Boolean(dirtyState.get(el)?.showError && !el.validity.valid);
+
+      if (!supportsUserInvalid && dirtyState.get(el)?.showError) {
+        el.classList.toggle("user-invalid-fallback", !el.validity.valid);
+        el.classList.toggle("user-valid-fallback", el.validity.valid);
+      }
+
+      if (invalid) {
+        if (shouldAnnounce && !announced.has(el)) {
+          announceFieldError(el);
+          announced.add(el);
+        }
+        el.setAttribute("aria-invalid", "true");
+        linkError(el, true);
+        flagged.add(el);
+      } else if (flagged.has(el) || el.getAttribute("aria-invalid") !== "true") {
+        el.setAttribute("aria-invalid", "false");
+        linkError(el, false);
+        flagged.delete(el);
+        announced.delete(el);
+      }
+    };
+
+    form.querySelectorAll("input, select, textarea").forEach((el) => syncAria(el));
+
+    form.addEventListener(
+      "blur",
+      (e) => {
+        const el = e.target;
+        if (!supportsUserInvalid && el.matches?.("input, select, textarea")) {
+          const st = dirtyState.get(el) || { interacted: false, showError: false };
+          if (st.interacted) st.showError = true;
+          dirtyState.set(el, st);
+        }
+        syncAria(el, true);
+      },
+      true
+    );
+
+    form.addEventListener("input", (e) => {
+      const el = e.target;
+      if (!supportsUserInvalid && el.matches?.("input, select, textarea")) {
+        const st = dirtyState.get(el) || { interacted: false, showError: false };
+        st.interacted = true;
+        dirtyState.set(el, st);
+      }
+      if (el.hasAttribute("aria-invalid")) syncAria(el);
+    });
+
+    form.addEventListener(
+      "invalid",
+      (e) => {
+        const el = e.target;
+        if (!supportsUserInvalid) {
+          dirtyState.set(el, { interacted: true, showError: true });
+        }
+        announced.add(el);
+        syncAria(el);
+      },
+      true
+    );
+
+    form.addEventListener("reset", () => {
+      setTimeout(() => {
+        for (const el of form.elements) {
+          dirtyState.delete(el);
+          el.classList.remove("user-invalid-fallback", "user-valid-fallback");
+          syncAria(el);
+        }
+      });
+    });
+  }
+
+  // --- Sortable Devices Table (modern-web-guidance/sortable-table + dynamic-sort) ---
+
+  const devicesTable = $("devices-table");
+  const devicesTbody = $("devices-tbody");
+
+  function reorderNodes(container, orderedNodes) {
+    const move = Object.hasOwn(Element.prototype, "moveBefore")
+      ? (node) => container.moveBefore(node, null)
+      : (node) => container.append(node);
+    for (const node of orderedNodes) move(node);
+  }
+
+  function sortRowsInPlace(rows, cellIndex, type, direction) {
+    const factor = direction === "ascending" ? 1 : -1;
+    const rawValue = (row) => {
+      const cell = row.cells[cellIndex];
+      if (!cell) return "";
+      return cell.dataset.value ?? cell.textContent.trim();
+    };
+    return rows.sort((a, b) => {
+      const va = rawValue(a);
+      const vb = rawValue(b);
+      if (type === "number") return factor * (Number(va) - Number(vb));
+      return factor * collator.compare(String(va), String(vb));
+    });
+  }
+
+  function applyTableSort(button, { animate = true, announce = true } = {}) {
+    const th = button.closest("th");
+    if (!th || !devicesTable || !devicesTbody) return;
+
+    const rows = Array.from(devicesTbody.rows).filter((r) => r.dataset.deviceName);
+    if (!rows.length) return;
+
+    const direction =
+      animate
+        ? th.getAttribute("aria-sort") === "ascending"
+          ? "descending"
+          : "ascending"
+        : state.sortDir;
+
+    state.sortKey = th.dataset.sortKey || "total";
+    state.sortDir = direction;
+
+    for (const header of devicesTable.tHead.rows[0].cells) {
+      header.removeAttribute("aria-sort");
+    }
+    th.setAttribute("aria-sort", direction);
+
+    const ordered = sortRowsInPlace(rows, th.cellIndex, th.dataset.type || "text", direction);
+    const update = () => reorderNodes(devicesTbody, ordered);
+
+    if (animate) {
+      if (typeof devicesTable.startViewTransition === "function") {
+        devicesTable.startViewTransition(update);
+      } else if (typeof document.startViewTransition === "function") {
+        document.startViewTransition(update);
+      } else {
+        update();
+      }
+    } else {
+      update();
+    }
+
+    if (announce) {
+      const dirLabel = direction === "ascending" ? "升序" : "降序";
+      const colLabel = button.querySelector("span")?.textContent.trim() || button.textContent.trim();
+      const status = $("table-sort-status");
+      if (status) {
+        status.textContent = `已按${colLabel}${dirLabel}排列，共 ${ordered.length} 台设备`;
+      }
+    }
+  }
+
+  if (devicesTable) {
+    if ("commandForElement" in HTMLButtonElement.prototype) {
+      devicesTable.addEventListener("command", (event) => {
+        if (event.command === "--sort" && event.source) {
+          applyTableSort(event.source, { animate: true, announce: true });
+        }
+      });
+    } else {
+      for (const btn of devicesTable.tHead.querySelectorAll('button[command="--sort"]')) {
+        btn.addEventListener("click", () => applyTableSort(btn, { animate: true, announce: true }));
+      }
+    }
+  }
+
+  // --- API Fetch Helper ---
 
   async function apiFetch(url, options = {}) {
     const res = await fetch(url, {
@@ -82,21 +745,6 @@
       throw new Error(detail);
     }
     return payload;
-  }
-
-  async function copyText(text, label = "内容") {
-    try {
-      await navigator.clipboard.writeText(text);
-      showToast(`已复制${label}`);
-    } catch {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      ta.remove();
-      showToast(`已复制${label}`);
-    }
   }
 
   // --- Rendering ---
@@ -125,7 +773,6 @@
       ? `每 ${col.flush_interval_seconds}s 落盘 · 上次 ${formatShortTime(col.last_flush_at)}`
       : `每 ${col.flush_interval_seconds}s 自动落盘`;
 
-    // Diagnostic banner
     const banner = $("diagnostic-banner");
     const messages = [];
     let isDanger = false;
@@ -140,16 +787,21 @@
     }
     if (data.oci_quota?.alert_level === "danger") {
       messages.push(
-        `OCI 免费额度红线预警：本月估算已达 ${data.oci_quota.percent}%（${formatBytes(data.oci_quota.used_bytes, data.oci_quota.unit_base)} / ${data.oci_quota.monthly_limit_tb} TB）！`
+        `OCI 免费额度红线预警：本月估算已达 ${data.oci_quota.percent}%（${formatBytes(
+          data.oci_quota.used_bytes,
+          data.oci_quota.unit_base
+        )} / ${data.oci_quota.monthly_limit_tb} TB）！`
       );
       isDanger = true;
     }
 
     if (messages.length > 0) {
       banner.textContent = messages.join(" ｜ ");
-      banner.className = `alert-banner ${isDanger ? "danger" : ""}`;
+      banner.className = `alert-banner${isDanger ? " danger" : ""}`;
+      banner.hidden = false;
     } else {
-      banner.className = "alert-banner hidden";
+      banner.hidden = true;
+      banner.textContent = "";
     }
   }
 
@@ -160,17 +812,19 @@
     if (oci.alert_level === "warning") card.classList.add("level-warning");
     if (oci.alert_level === "danger") card.classList.add("level-danger");
 
-    $("oci-used").textContent = formatBytes(oci.used_bytes, base);
-    $("oci-limit").textContent = `${oci.monthly_limit_tb.toFixed(2)} ${base === 1024 ? "TiB" : "TB"}`;
-    $("oci-scale-max").textContent = `${oci.monthly_limit_tb} ${base === 1024 ? "TiB" : "TB"}`;
+    const usedText = formatBytes(oci.used_bytes, base);
+    const unitName = base === 1024 ? "TiB" : "TB";
+    $("oci-used").textContent = usedText;
+    $("oci-limit").textContent = `${oci.monthly_limit_tb.toFixed(2)} ${unitName}`;
+    $("oci-scale-max").textContent = `${oci.monthly_limit_tb} ${unitName}`;
 
     const pill = $("oci-percent-pill");
     pill.textContent =
       oci.alert_level === "danger"
-        ? `${oci.percent}% · 红线预警`
+        ? `⚠ ${oci.percent}% · 红线预警`
         : oci.alert_level === "warning"
-          ? `${oci.percent}% · 需留意`
-          : `${oci.percent}% · 充裕`;
+          ? `△ ${oci.percent}% · 需留意`
+          : `✓ ${oci.percent}% · 充裕`;
     pill.className = `pill ${
       oci.alert_level === "danger"
         ? "pill-danger"
@@ -187,10 +841,13 @@
     const endDate = (oci.cycle_end || "").slice(0, 10);
     $("oci-cycle-range").textContent = `账期 ${startDate} ~ ${endDate} · 日均 ${formatBytes(oci.daily_burn_bytes, base)}/天`;
 
-    $("oci-marker-warn").style.left = `${Math.min(98, oci.warn_percent)}%`;
-    $("oci-marker-danger").style.left = `${Math.min(98, oci.danger_percent)}%`;
+    $("oci-marker-warn").style.insetInlineStart = `${Math.min(98, oci.warn_percent)}%`;
+    $("oci-marker-danger").style.insetInlineStart = `${Math.min(98, oci.danger_percent)}%`;
 
-    // Stacked protocol segments inside OCI progress bar
+    const track = $("oci-progress-track");
+    track.setAttribute("aria-valuenow", String(Math.min(100, oci.percent)));
+    track.setAttribute("aria-valuetext", `${usedText} / ${oci.monthly_limit_tb} ${unitName} (${oci.percent}%)`);
+
     const segHost = $("oci-bar-segments");
     const limit = Math.max(1, oci.limit_bytes);
     let usedPctAcc = 0;
@@ -199,17 +856,15 @@
         const rawPct = (item.oci_weighted_bytes / limit) * 100;
         const clamped = Math.max(0, Math.min(100 - usedPctAcc, rawPct));
         usedPctAcc += clamped;
-        return `<div class="oci-segment" style="width:${clamped.toFixed(2)}%;background:${escapeHtml(item.color)}" title="${escapeHtml(item.label)}: ${formatBytes(item.oci_weighted_bytes, base)}"></div>`;
+        return `<div class="oci-segment" style="inline-size:${clamped.toFixed(2)}%;background:${escapeHtml(item.color)}" title="${escapeHtml(item.label)}: ${formatBytes(item.oci_weighted_bytes, base)}"></div>`;
       })
       .join("");
 
-    // Transparent multiplier formula chips
-    const breakdownHost = $("oci-breakdown");
-    breakdownHost.innerHTML = (oci.breakdown || [])
+    $("oci-breakdown").innerHTML = (oci.breakdown || [])
       .map(
         (item) => `
           <div class="oci-chip">
-            <span class="dot" style="background:${escapeHtml(item.color)}"></span>
+            <span class="dot" style="background:${escapeHtml(item.color)}" aria-hidden="true"></span>
             <span>${escapeHtml(item.label)}</span>
             <span class="mono">${formatBytes(item.total_bytes, base)} × ${item.multiplier} = <strong>${formatBytes(item.oci_weighted_bytes, base)}</strong></span>
           </div>
@@ -230,10 +885,12 @@
     const p0 = data.protocols[0];
     const p1 = data.protocols[1];
     if (p0) {
+      $("kpi-proto-0-label").textContent = `${p0.label}（${p0.multiplier}×）`;
       $("kpi-proto-0-bytes").textContent = formatBytes(p0.total_bytes, base);
       $("kpi-proto-0-sub").textContent = `原始占比 ${p0.share_percent}% · OCI 计入 ${formatBytes(p0.oci_weighted_bytes, base)}`;
     }
     if (p1) {
+      $("kpi-proto-1-label").textContent = `${p1.label}（${p1.multiplier}×）`;
       $("kpi-proto-1-bytes").textContent = formatBytes(p1.total_bytes, base);
       $("kpi-proto-1-sub").textContent = `原始占比 ${p1.share_percent}% · OCI 计入 ${formatBytes(p1.oci_weighted_bytes, base)}`;
     }
@@ -241,67 +898,97 @@
     $("kpi-devices-count").textContent = `${data.summary.active_devices} / ${data.summary.total_devices}`;
   }
 
+  function buildDeviceRowMarkup(dev, base) {
+    const statusPill =
+      dev.status === "active"
+        ? `<span class="pill pill-ok">● 启用</span>`
+        : dev.status === "revoked"
+          ? `<span class="pill pill-danger">✕ 已吊销</span>`
+          : `<span class="pill pill-muted">○ 仅观测</span>`;
+
+    const protoTags = [];
+    if (dev.has_vless) protoTags.push(`<span class="pill pill-proto">VLESS</span>`);
+    if (dev.has_hysteria2) protoTags.push(`<span class="pill pill-proto pill-proto-hy2">Hy2</span>`);
+
+    let actionsHtml = "";
+    if (dev.status === "active") {
+      actionsHtml = `
+        <button type="button" class="btn btn-secondary btn-sm" data-action="qr" data-name="${escapeHtml(dev.name)}">二维码</button>
+        <button type="button" class="btn btn-danger btn-sm" data-action="revoke" data-name="${escapeHtml(dev.name)}">吊销</button>
+      `;
+    } else if (dev.status === "revoked") {
+      actionsHtml = `
+        <button type="button" class="btn btn-secondary btn-sm" data-action="restore" data-name="${escapeHtml(dev.name)}">恢复换密</button>
+        <button type="button" class="btn btn-danger btn-sm" data-action="delete" data-name="${escapeHtml(dev.name)}">删记录</button>
+      `;
+    } else {
+      actionsHtml = `<span class="meta-text">未托管凭据</span>`;
+    }
+
+    const shareVal = Math.min(100, Math.max(0, Number(dev.share_percent || 0)));
+
+    return `
+      <td data-value="${escapeHtml(dev.name)}">
+        <div class="dev-name-row">
+          <span class="dev-name">${escapeHtml(dev.name)}</span>
+          ${statusPill}
+          ${protoTags.join("")}
+        </div>
+        ${dev.note ? `<div class="dev-note">${escapeHtml(dev.note)}</div>` : ""}
+      </td>
+      <td class="num mono up-color" data-value="${Number(dev.upload_bytes || 0)}">${formatBytes(dev.upload_bytes, base)}</td>
+      <td class="num mono down-color" data-value="${Number(dev.download_bytes || 0)}">${formatBytes(dev.download_bytes, base)}</td>
+      <td class="num share-cell" data-value="${Number(dev.total_bytes || 0)}">
+        <div class="mono"><strong>${formatBytes(dev.total_bytes, base)}</strong> <span class="meta-text">(${dev.share_percent}%)</span></div>
+        <progress class="share-progress" max="100" value="${shareVal}" aria-label="${escapeHtml(dev.name)} 流量占比 ${dev.share_percent}%"></progress>
+      </td>
+      <td class="actions-col">
+        <div class="row-actions">${actionsHtml}</div>
+      </td>
+    `;
+  }
+
   function renderDevicesTable(data) {
-    const tbody = $("devices-tbody");
     const base = data.oci_quota?.unit_base || 1000;
     const devices = data.devices || [];
 
     if (!devices.length) {
-      tbody.innerHTML = `<tr><td colspan="5" class="empty-cell">暂无设备数据，点击右上角「新增设备」或从 sing-box 配置同步。</td></tr>`;
+      devicesTbody.innerHTML = `<tr><td colspan="5" class="empty-cell">暂无设备数据，点击右上角「新增设备」或从 sing-box 配置同步。</td></tr>`;
       return;
     }
 
-    tbody.innerHTML = devices
-      .map((dev) => {
-        const statusPill =
-          dev.status === "active"
-            ? `<span class="pill pill-ok">启用</span>`
-            : dev.status === "revoked"
-              ? `<span class="pill pill-danger">已吊销</span>`
-              : `<span class="pill pill-muted">仅观测</span>`;
+    // Reuse existing <tr> nodes by device name so sort view-transitions & identity persist
+    const existingByName = new Map();
+    for (const row of Array.from(devicesTbody.rows)) {
+      if (row.dataset.deviceName) {
+        existingByName.set(row.dataset.deviceName, row);
+      } else {
+        row.remove();
+      }
+    }
 
-        const protoTags = [];
-        if (dev.has_vless) protoTags.push(`<span class="pill pill-proto">VLESS</span>`);
-        if (dev.has_hysteria2) protoTags.push(`<span class="pill pill-proto pill-proto-hy2">Hy2</span>`);
+    const activeNames = new Set();
+    for (const dev of devices) {
+      activeNames.add(dev.name);
+      let row = existingByName.get(dev.name);
+      if (!row) {
+        row = document.createElement("tr");
+        row.dataset.deviceName = dev.name;
+        devicesTbody.append(row);
+      }
+      row.innerHTML = buildDeviceRowMarkup(dev, base);
+    }
 
-        let actionsHtml = "";
-        if (dev.status === "active") {
-          actionsHtml = `
-            <button class="btn btn-secondary btn-sm" data-action="qr" data-name="${escapeHtml(dev.name)}">二维码</button>
-            <button class="btn btn-danger btn-sm" data-action="revoke" data-name="${escapeHtml(dev.name)}">吊销</button>
-          `;
-        } else if (dev.status === "revoked") {
-          actionsHtml = `
-            <button class="btn btn-secondary btn-sm" data-action="restore" data-name="${escapeHtml(dev.name)}">恢复换密</button>
-            <button class="btn btn-danger btn-sm" data-action="delete" data-name="${escapeHtml(dev.name)}">删记录</button>
-          `;
-        } else {
-          actionsHtml = `<span class="meta-text">未托管凭据</span>`;
-        }
+    for (const [name, row] of existingByName) {
+      if (!activeNames.has(name)) row.remove();
+    }
 
-        return `
-          <tr>
-            <td>
-              <div class="dev-name-row">
-                <span class="dev-name">${escapeHtml(dev.name)}</span>
-                ${statusPill}
-                ${protoTags.join("")}
-              </div>
-              ${dev.note ? `<div class="dev-note">${escapeHtml(dev.note)}</div>` : ""}
-            </td>
-            <td class="num mono up-color">${formatBytes(dev.upload_bytes, base)}</td>
-            <td class="num mono down-color">${formatBytes(dev.download_bytes, base)}</td>
-            <td class="num share-cell">
-              <div class="mono"><strong>${formatBytes(dev.total_bytes, base)}</strong> <span class="meta-text">(${dev.share_percent}%)</span></div>
-              <div class="share-bar-bg"><div class="share-bar-fill" style="width:${Math.min(100, dev.share_percent)}%"></div></div>
-            </td>
-            <td class="actions-col">
-              <div class="row-actions">${actionsHtml}</div>
-            </td>
-          </tr>
-        `;
-      })
-      .join("");
+    // Re-apply active sort without animation on background poll
+    const activeTh = devicesTable.querySelector(`th[data-sort-key="${CSS.escape(state.sortKey)}"]`);
+    const activeBtn = activeTh?.querySelector("button");
+    if (activeBtn) {
+      applyTableSort(activeBtn, { animate: false, announce: false });
+    }
   }
 
   function renderProtocolDonut(data) {
@@ -327,14 +1014,14 @@
               return seg;
             })
             .join("")
-        : `<circle cx="98" cy="98" r="${r}" fill="none" stroke="rgba(148,163,184,0.18)" stroke-width="22" />`;
+        : `<circle cx="98" cy="98" r="${r}" fill="none" stroke="var(--border-strong)" stroke-width="22" />`;
 
     $("protocol-donut").innerHTML = `
       <svg viewBox="0 0 196 196" width="196" height="196" role="img" aria-label="协议分布图">
-        <circle cx="98" cy="98" r="${r}" fill="none" stroke="rgba(148,163,184,0.12)" stroke-width="22" />
+        <circle cx="98" cy="98" r="${r}" fill="none" stroke="var(--surface-elevated)" stroke-width="22" />
         ${circles}
-        <text x="98" y="92" text-anchor="middle" fill="#94a3b8" font-size="11">${useOci ? "OCI 估算" : rangeLabel(data.range) + "原始"}</text>
-        <text x="98" y="113" text-anchor="middle" fill="#f1f5f9" font-size="16" font-weight="700" font-family="ui-monospace, monospace">${formatBytes(total, base)}</text>
+        <text x="98" y="92" text-anchor="middle" fill="var(--text-muted)" font-size="11">${useOci ? "OCI 估算" : rangeLabel(data.range) + "原始"}</text>
+        <text x="98" y="113" text-anchor="middle" fill="var(--text)" font-size="16" font-weight="700" font-family="var(--font-mono)">${formatBytes(total, base)}</text>
       </svg>
     `;
 
@@ -345,7 +1032,7 @@
         return `
           <div class="proto-row">
             <div class="proto-left">
-              <span class="dot" style="background:${escapeHtml(p.color)}"></span>
+              <span class="dot" style="background:${escapeHtml(p.color)}" aria-hidden="true"></span>
               <div>
                 <div class="proto-title">${escapeHtml(p.label)}</div>
                 <div class="proto-meta mono">↑ ${formatBytes(p.upload_bytes, base)} · ↓ ${formatBytes(p.download_bytes, base)} · ${p.multiplier}×</div>
@@ -380,8 +1067,8 @@
     }
 
     const width = 920;
-    const height = 220;
-    const pad = { top: 16, right: 16, bottom: 32, left: 66 };
+    const height = 224;
+    const pad = { top: 16, right: 16, bottom: 32, left: 68 };
     const plotW = width - pad.left - pad.right;
     const plotH = height - pad.top - pad.bottom;
 
@@ -395,8 +1082,8 @@
         const y = pad.top + plotH * (1 - t);
         const val = maxVal * t;
         return `
-          <line x1="${pad.left}" y1="${y.toFixed(1)}" x2="${width - pad.right}" y2="${y.toFixed(1)}" stroke="rgba(148,163,184,0.12)" stroke-dasharray="3 4" />
-          <text x="${pad.left - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" fill="#64748b" font-size="10.5" font-family="ui-monospace, monospace">${formatBytes(val, base)}</text>
+          <line x1="${pad.left}" y1="${y.toFixed(1)}" x2="${width - pad.right}" y2="${y.toFixed(1)}" stroke="var(--border)" stroke-dasharray="3 4" />
+          <text x="${pad.left - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" fill="var(--text-dim)" font-size="10.5" font-family="var(--font-mono)">${formatBytes(val, base)}</text>
         `;
       })
       .join("");
@@ -416,48 +1103,49 @@
         return `
           <g class="trend-bar-group" data-idx="${idx}" style="cursor:pointer">
             <rect x="${(pad.left + barSlot * idx).toFixed(1)}" y="${pad.top}" width="${barSlot.toFixed(1)}" height="${plotH}" fill="transparent" />
-            <rect x="${x.toFixed(1)}" y="${yDown.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0, downH).toFixed(1)}" rx="2" fill="#38bdf8" fill-opacity="0.85" />
-            <rect x="${x.toFixed(1)}" y="${yUp.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0, upH).toFixed(1)}" rx="2" fill="#34d399" fill-opacity="0.9" />
-            ${showLabel ? `<text x="${xCenter.toFixed(1)}" y="${height - 10}" text-anchor="middle" fill="#64748b" font-size="10.5" font-family="ui-monospace, monospace">${escapeHtml(pt.label)}</text>` : ""}
+            <rect x="${x.toFixed(1)}" y="${yDown.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0, downH).toFixed(1)}" rx="2" fill="var(--primary)" fill-opacity="0.88" />
+            <rect x="${x.toFixed(1)}" y="${yUp.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0, upH).toFixed(1)}" rx="2" fill="var(--ok)" fill-opacity="0.92" />
+            ${showLabel ? `<text x="${xCenter.toFixed(1)}" y="${height - 10}" text-anchor="middle" fill="var(--text-dim)" font-size="10.5" font-family="var(--font-mono)">${escapeHtml(pt.label)}</text>` : ""}
           </g>
         `;
       })
       .join("");
 
     host.innerHTML = `
-      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="流量趋势柱状图">
         ${gridLines}
         ${bars}
       </svg>
     `;
 
-    host.querySelectorAll(".trend-bar-group").forEach((group) => {
-      group.addEventListener("mouseenter", (e) => {
-        const idx = Number(group.dataset.idx);
-        const pt = points[idx];
-        tooltip.innerHTML = `
-          <div style="font-weight:700;margin-bottom:4px" class="mono">${escapeHtml(pt.date || pt.label)}</div>
-          <div class="mono down-color">下行 ↓ ${formatBytes(pt.download_bytes, base)}</div>
-          <div class="mono up-color">上行 ↑ ${formatBytes(pt.upload_bytes, base)}</div>
-          <div class="mono" style="margin-top:3px;border-top:1px solid rgba(148,163,184,0.18);padding-top:3px">
-            总计 ${formatBytes(pt.total_bytes, base)}
-          </div>
-          ${pt.oci_weighted_bytes > 0 ? `<div class="mono meta-text">OCI 加权 ${formatBytes(pt.oci_weighted_bytes, base)}</div>` : ""}
-        `;
-        tooltip.classList.remove("hidden");
-        positionTooltip(e);
-      });
-      group.addEventListener("mousemove", positionTooltip);
-      group.addEventListener("mouseleave", () => tooltip.classList.add("hidden"));
-    });
-
     function positionTooltip(e) {
       const rect = host.getBoundingClientRect();
       const left = Math.min(rect.width - 185, Math.max(8, e.clientX - rect.left + 14));
       const top = Math.max(8, e.clientY - rect.top - 24);
-      tooltip.style.left = `${left}px`;
-      tooltip.style.top = `${top}px`;
+      tooltip.style.insetInlineStart = `${left}px`;
+      tooltip.style.insetBlockStart = `${top}px`;
     }
+
+    host.querySelectorAll(".trend-bar-group").forEach((group) => {
+      group.addEventListener("mouseenter", (e) => {
+        const pt = points[Number(group.dataset.idx)];
+        tooltip.innerHTML = `
+          <div style="font-weight:700;margin-block-end:4px" class="mono">${escapeHtml(pt.date || pt.label)}</div>
+          <div class="mono down-color">下行 ↓ ${formatBytes(pt.download_bytes, base)}</div>
+          <div class="mono up-color">上行 ↑ ${formatBytes(pt.upload_bytes, base)}</div>
+          <div class="mono" style="margin-block-start:3px;border-block-start:1px solid var(--border);padding-block-start:3px">
+            总计 ${formatBytes(pt.total_bytes, base)}
+          </div>
+          ${pt.oci_weighted_bytes > 0 ? `<div class="mono meta-text">OCI 加权 ${formatBytes(pt.oci_weighted_bytes, base)}</div>` : ""}
+        `;
+        tooltip.hidden = false;
+        positionTooltip(e);
+      });
+      group.addEventListener("mousemove", positionTooltip);
+      group.addEventListener("mouseleave", () => {
+        tooltip.hidden = true;
+      });
+    });
   }
 
   function renderOpsSection(data) {
@@ -466,7 +1154,14 @@
     $("backups-count-pill").textContent = `${h.backups_count || 0} 备份`;
 
     const matchedText = (h.matched_protocols || [])
-      .map((m) => `${m.label}: ${m.matched_inbound_tag ? `✓ ${m.matched_inbound_tag} (:${m.listen_port || "?"})` : "✗ 未匹配"}`)
+      .map(
+        (m) =>
+          `${escapeHtml(m.label)}: ${
+            m.matched_inbound_tag
+              ? `✓ ${escapeHtml(m.matched_inbound_tag)} (:${escapeHtml(m.listen_port || "?")})`
+              : "✗ 未匹配"
+          }`
+      )
       .join("<br/>");
 
     $("singbox-health-grid").innerHTML = `
@@ -484,7 +1179,7 @@
       </div>
       <div class="health-item" style="grid-column: 1 / -1">
         <div class="h-label">已绑定入站协议</div>
-        <div class="h-val mono" style="font-size:12px">${matchedText || "--"}</div>
+        <div class="h-val mono" style="font-size:0.78rem">${matchedText || "--"}</div>
       </div>
     `;
   }
@@ -507,7 +1202,7 @@
               <div>
                 <div>
                   <span class="pill ${item.success ? "pill-ok" : "pill-danger"}">${escapeHtml(item.action)}</span>
-                  <strong class="mono" style="margin-left:6px">${escapeHtml(item.target)}</strong>
+                  <strong class="mono" style="margin-inline-start:6px">${escapeHtml(item.target)}</strong>
                 </div>
                 <div class="audit-detail">${escapeHtml(item.detail)}</div>
               </div>
@@ -517,13 +1212,19 @@
         )
         .join("");
     } catch {
-      // ignore passive audit refresh error
+      // Passive audit refresh error ignored
     }
   }
 
   async function refreshDashboard() {
+    state.dashboardAbort?.abort();
+    const controller = new AbortController();
+    state.dashboardAbort = controller;
+
     try {
-      const data = await apiFetch(`/api/dashboard?range=${encodeURIComponent(state.range)}`);
+      const data = await apiFetch(`/api/dashboard?range=${encodeURIComponent(state.range)}`, {
+        signal: controller.signal,
+      });
       state.dashboard = data;
       renderTopbar(data);
       renderOciQuota(data.oci_quota);
@@ -533,21 +1234,20 @@
       renderTrendChart(data);
       renderOpsSection(data);
     } catch (err) {
+      if (err.name === "AbortError") return;
       showToast(`加载仪表盘失败: ${err.message}`, "error");
     }
   }
 
-  // --- Modals: Add, QR, Revoke ---
+  // --- Add Device Modal ---
 
-  function openModal(id) {
-    $(id).classList.remove("hidden");
-  }
+  function prepareAddDeviceModal() {
+    const form = $("form-add-device");
+    form.reset();
+    const inlineErr = $("add-form-error");
+    inlineErr.hidden = true;
+    inlineErr.textContent = "";
 
-  function closeModal(id) {
-    $(id).classList.add("hidden");
-  }
-
-  function populateAddModalProtocols() {
     const host = $("add-protocols-list");
     const protos = state.dashboard?.configured_protocols || [];
     host.innerHTML = protos
@@ -555,7 +1255,7 @@
         (p) => `
           <label class="check-card">
             <input type="checkbox" name="protocols" value="${escapeHtml(p.key)}" checked />
-            <span class="dot" style="background:${escapeHtml(p.color)}"></span>
+            <span class="dot" style="background:${escapeHtml(p.color)}" aria-hidden="true"></span>
             <div>
               <div style="font-weight:600">${escapeHtml(p.label)}</div>
               <div class="meta-text mono">inbound: ${escapeHtml(p.inbound_tag)} · OCI ${p.oci_multiplier}×</div>
@@ -566,135 +1266,283 @@
       .join("");
   }
 
-  function renderQrModal(bundle) {
-    state.qrBundle = bundle;
-    state.qrActiveTab = 0;
-    state.revealSecret = false;
+  $("form-add-device").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const inlineErr = $("add-form-error");
+    inlineErr.hidden = true;
 
-    $("modal-qr-title").textContent = `设备凭据：${bundle.device.name}`;
-    $("modal-qr-subtitle").textContent = bundle.device.note
-      ? `${bundle.device.note} · 本地离线生成二维码`
-      : "本地离线生成二维码，凭据不经过任何第三方服务器";
-
-    const tabs = [
-      ...bundle.links.map((item, idx) => ({ idx, label: item.label })),
-      { idx: bundle.links.length, label: "sing-box JSON" },
-    ];
-
-    const tabsHost = $("qr-tabs");
-    tabsHost.innerHTML = tabs
-      .map(
-        (t, i) =>
-          `<button class="qr-tab ${i === 0 ? "active" : ""}" data-qr-tab="${t.idx}">${escapeHtml(t.label)}</button>`
-      )
-      .join("");
-
-    tabsHost.querySelectorAll(".qr-tab").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        state.qrActiveTab = Number(btn.dataset.qrTab);
-        tabsHost.querySelectorAll(".qr-tab").forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
-        renderQrTabBody();
-      });
-    });
-
-    renderQrTabBody();
-    openModal("modal-qr");
-  }
-
-  function renderQrTabBody() {
-    const bundle = state.qrBundle;
-    const host = $("qr-content");
-    if (!bundle) return;
-
-    if (state.qrActiveTab >= bundle.links.length) {
-      host.innerHTML = `
-        <pre class="json-box">${escapeHtml(bundle.singbox_client_json)}</pre>
-        <button id="btn-copy-sb-json" class="btn btn-primary">复制 sing-box 客户端 Outbounds JSON</button>
-      `;
-      $("btn-copy-sb-json").addEventListener("click", () =>
-        copyText(bundle.singbox_client_json, "sing-box JSON")
-      );
+    if (!form.checkValidity()) {
+      const firstInvalid = form.querySelector(":invalid");
+      firstInvalid?.focus();
       return;
     }
 
-    const link = bundle.links[state.qrActiveTab];
-    const devName = encodeURIComponent(bundle.device.name);
-    const protoKey = encodeURIComponent(link.protocol_key);
-    const maskedSecret = state.revealSecret
-      ? link.credential_preview
-      : `${link.credential_preview.slice(0, 6)}••••••••••••${link.credential_preview.slice(-4)}`;
+    const checked = Array.from(form.querySelectorAll('input[name="protocols"]:checked')).map(
+      (el) => el.value
+    );
+    if (!checked.length) {
+      inlineErr.textContent = "请至少选择一个开通协议。";
+      inlineErr.hidden = false;
+      return;
+    }
 
-    const warningsHtml = (link.warnings || [])
-      .map((w) => `<div class="alert-banner" style="margin-bottom:10px">${escapeHtml(w)}</div>`)
-      .join("");
+    const payload = {
+      name: $("input-device-name").value.trim(),
+      note: $("input-device-note").value.trim(),
+      protocols: checked,
+      vless_uuid: $("input-vless-uuid").value.trim() || null,
+      hy2_password: $("input-hy2-password").value.trim() || null,
+    };
 
-    host.innerHTML = `
-      ${warningsHtml}
-      <div class="qr-layout">
-        <div class="qr-frame">
-          <img src="${link.qr_svg_data_uri}" alt="${escapeHtml(link.label)} 二维码" />
-          <div class="qr-dl-row">
-            <a class="btn btn-secondary btn-sm" href="/api/devices/${devName}/qrcode?protocol=${protoKey}&format=png" download>下载 PNG</a>
-            <a class="btn btn-secondary btn-sm" href="/api/devices/${devName}/qrcode?protocol=${protoKey}&format=svg" download>下载 SVG</a>
-          </div>
-        </div>
+    const submitBtn = $("btn-submit-add");
+    submitBtn.disabled = true;
+    submitBtn.textContent = "校验并写入中...";
+    try {
+      const res = await apiFetch("/api/devices", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      await closeTopLayerDialog($("modal-add"));
+      await Promise.all([refreshDashboard(), refreshAudit()]);
+      if (res.share) {
+        openQrModal(res.share);
+      } else {
+        showToast(`设备 ${res.device.name} 已创建并生效（${res.reload}）`);
+      }
+    } catch (err) {
+      inlineErr.textContent = `创建失败: ${err.message}`;
+      inlineErr.hidden = false;
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "创建并生成二维码";
+    }
+  });
 
-        <div class="qr-meta-list">
-          <div style="display:flex;gap:6px;flex-wrap:wrap">
-            <span class="pill pill-proto">${escapeHtml(link.security)}</span>
-            <span class="pill pill-muted mono">${escapeHtml(link.server)}</span>
-            ${link.sni ? `<span class="pill pill-muted mono">SNI: ${escapeHtml(link.sni)}</span>` : ""}
-          </div>
+  // --- QR Code & Share Links Modal (with accessible tabs + hidden="until-found") ---
 
-          <div>
-            <div class="meta-text" style="margin-bottom:4px">
-              密钥凭据
-              <button id="btn-toggle-secret" class="link-btn" style="margin-left:8px">${state.revealSecret ? "隐藏" : "显示明文"}</button>
+  function openQrModal(bundle) {
+    state.qrBundle = bundle;
+    $("modal-qr-title").textContent = `设备凭据：${bundle.device.name}`;
+    $("modal-qr-subtitle").textContent = bundle.device.note
+      ? `${bundle.device.note} · 本地离线生成二维码`
+      : "本地离线生成二维码，凭据绝不离开本机";
+
+    const tabsHost = $("qr-tabs");
+    const panelsHost = $("qr-panels");
+    const devEncoded = encodeURIComponent(bundle.device.name);
+
+    const tabsHtml = [
+      ...bundle.links.map(
+        (item, idx) => `
+          <button
+            type="button"
+            id="qr-tab-${idx}"
+            class="qr-tab"
+            role="tab"
+            data-panel-idx="${idx}"
+            aria-selected="${idx === 0 ? "true" : "false"}"
+            ${idx === 0 ? "focusgroupstart" : ""}
+          >${escapeHtml(item.label)}</button>
+        `
+      ),
+      `
+        <button
+          type="button"
+          id="qr-tab-json"
+          class="qr-tab"
+          role="tab"
+          data-panel-idx="${bundle.links.length}"
+          aria-selected="${bundle.links.length === 0 ? "true" : "false"}"
+          ${bundle.links.length === 0 ? "focusgroupstart" : ""}
+        >sing-box JSON</button>
+      `,
+    ].join("");
+
+    const panelsHtml = [
+      ...bundle.links.map((link, idx) => {
+        const protoEncoded = encodeURIComponent(link.protocol_key);
+        const secretId = `qr-secret-${idx}`;
+        const uriId = `qr-uri-${idx}`;
+        const masked = `${link.credential_preview.slice(0, 6)}••••••••••••${link.credential_preview.slice(-4)}`;
+        const warningsHtml = (link.warnings || [])
+          .map((w) => `<div class="alert-banner" style="margin-block-end:10px">${escapeHtml(w)}</div>`)
+          .join("");
+
+        return `
+          <div
+            class="qr-tabpanel"
+            role="tabpanel"
+            aria-labelledby="qr-tab-${idx}"
+            data-panel-idx="${idx}"
+            ${idx === 0 ? "" : 'hidden="until-found"'}
+          >
+            ${warningsHtml}
+            <div class="qr-layout">
+              <div class="qr-col">
+                <div class="qr-frame">
+                  <img src="${link.qr_svg_data_uri}" alt="${escapeHtml(link.label)} 客户端配置二维码" />
+                </div>
+                <div class="qr-dl-row">
+                  <a class="btn btn-secondary btn-sm" href="/api/devices/${devEncoded}/qrcode?protocol=${protoEncoded}&format=png" download>下载 PNG</a>
+                  <a class="btn btn-secondary btn-sm" href="/api/devices/${devEncoded}/qrcode?protocol=${protoEncoded}&format=svg" download>下载 SVG</a>
+                </div>
+              </div>
+
+              <div class="qr-meta-list">
+                <div style="display:flex;gap:6px;flex-wrap:wrap">
+                  <span class="pill pill-proto">${escapeHtml(link.security)}</span>
+                  <span class="pill pill-muted mono">${escapeHtml(link.server)}</span>
+                  ${link.sni ? `<span class="pill pill-muted mono">SNI: ${escapeHtml(link.sni)}</span>` : ""}
+                </div>
+
+                <div>
+                  <div class="meta-text" style="margin-block-end:4px">
+                    密钥凭据
+                    <button
+                      type="button"
+                      class="link-btn"
+                      style="margin-inline-start:8px"
+                      data-toggle-secret="${secretId}"
+                      aria-expanded="false"
+                    >显示明文</button>
+                  </div>
+                  <div
+                    id="${secretId}"
+                    class="uri-box"
+                    style="max-block-size:none"
+                    data-masked="${escapeHtml(masked)}"
+                    data-copy-value="${escapeHtml(link.credential_preview)}"
+                  >${escapeHtml(masked)}</div>
+                </div>
+
+                <div>
+                  <div class="meta-text" style="margin-block-end:4px">通用导入链接（Shadowrocket / v2rayN / Nekobox / sing-box）</div>
+                  <div id="${uriId}" class="uri-box">${escapeHtml(link.uri)}</div>
+                </div>
+
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <span class="copy-control">
+                    <button
+                      type="button"
+                      class="btn btn-primary copy-button"
+                      command="--copy"
+                      commandfor="${uriId}"
+                    >
+                      <span class="copy-icon" aria-hidden="true"></span>
+                      <span>复制分享链接</span>
+                    </button>
+                    <span class="copy-tip" role="status"></span>
+                  </span>
+                  <span class="copy-control">
+                    <button
+                      type="button"
+                      class="btn btn-secondary copy-button"
+                      command="--copy"
+                      commandfor="${secretId}"
+                    >
+                      <span class="copy-icon" aria-hidden="true"></span>
+                      <span>复制密钥</span>
+                    </button>
+                    <span class="copy-tip" role="status"></span>
+                  </span>
+                </div>
+              </div>
             </div>
-            <div class="uri-box" style="max-height:none">${escapeHtml(maskedSecret)}</div>
           </div>
-
-          <div>
-            <div class="meta-text" style="margin-bottom:4px">通用导入链接（Shadowrocket / v2rayN / Nekobox / sing-box）</div>
-            <div class="uri-box">${escapeHtml(link.uri)}</div>
-          </div>
-
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button id="btn-copy-uri" class="btn btn-primary">复制分享链接</button>
-            <button id="btn-copy-secret" class="btn btn-secondary">复制密钥</button>
-          </div>
+        `;
+      }),
+      `
+        <div
+          class="qr-tabpanel"
+          role="tabpanel"
+          aria-labelledby="qr-tab-json"
+          data-panel-idx="${bundle.links.length}"
+          ${bundle.links.length === 0 ? "" : 'hidden="until-found"'}
+        >
+          <pre id="qr-sb-json" class="json-box">${escapeHtml(bundle.singbox_client_json)}</pre>
+          <span class="copy-control">
+            <button type="button" class="btn btn-primary copy-button" command="--copy" commandfor="qr-sb-json">
+              <span class="copy-icon" aria-hidden="true"></span>
+              <span>复制 sing-box 客户端 Outbounds JSON</span>
+            </button>
+            <span class="copy-tip" role="status"></span>
+          </span>
         </div>
-      </div>
-    `;
+      `,
+    ].join("");
 
-    $("btn-copy-uri").addEventListener("click", () => copyText(link.uri, `${link.label} 分享链接`));
-    $("btn-copy-secret").addEventListener("click", () => copyText(link.credential_preview, "设备密钥"));
-    $("btn-toggle-secret").addEventListener("click", () => {
-      state.revealSecret = !state.revealSecret;
-      renderQrTabBody();
+    tabsHost.innerHTML = tabsHtml;
+    panelsHost.innerHTML = panelsHtml;
+
+    const selectQrPanel = (idx) => {
+      for (const panel of panelsHost.querySelectorAll('[role="tabpanel"]')) {
+        const match = Number(panel.dataset.panelIdx) === idx;
+        panel.hidden = match ? false : "until-found";
+      }
+    };
+
+    const firstTab = tabsHost.querySelector('[role="tab"]');
+    if (firstTab) syncTabSelection(tabsHost, firstTab);
+
+    // Sync find-in-page reveal via beforematch
+    panelsHost.querySelectorAll('[role="tabpanel"]').forEach((panel) => {
+      panel.addEventListener("beforematch", () => {
+        const idx = Number(panel.dataset.panelIdx);
+        const tab = tabsHost.querySelector(`[data-panel-idx="${idx}"]`);
+        if (tab) {
+          syncTabSelection(tabsHost, tab);
+          selectQrPanel(idx);
+        }
+      });
     });
+
+    const qrDialog = $("modal-qr");
+    if (!qrDialog.open) qrDialog.showModal();
   }
 
-  // --- Event Bindings ---
+  // Delegated QR tabs & secret visibility toggle
+  wireTablistKeyboard($("qr-tabs"), (tab) => {
+    const idx = Number(tab.dataset.panelIdx);
+    for (const panel of $("qr-panels").querySelectorAll('[role="tabpanel"]')) {
+      panel.hidden = Number(panel.dataset.panelIdx) === idx ? false : "until-found";
+    }
+  });
 
-  document.querySelectorAll(".range-tab").forEach((tab) => {
-    tab.addEventListener("click", () => {
-      state.range = tab.dataset.range;
-      document.querySelectorAll(".range-tab").forEach((t) => t.classList.remove("active"));
-      tab.classList.add("active");
+  $("qr-panels").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-toggle-secret]");
+    if (!btn) return;
+    const box = document.getElementById(btn.dataset.toggleSecret);
+    if (!box) return;
+    const expanded = btn.getAttribute("aria-expanded") === "true";
+    btn.setAttribute("aria-expanded", String(!expanded));
+    btn.textContent = expanded ? "显示明文" : "隐藏明文";
+    box.textContent = expanded ? box.dataset.masked : box.dataset.copyValue;
+  });
+
+  // --- Global Controls & Table Row Actions ---
+
+  // Range tabs fetch on demand -> selection by activation (click/Enter/Space) to avoid redundant fetches on arrowing
+  wireTablistKeyboard(
+    $("range-tablist"),
+    (tab) => {
+      const nextRange = tab.dataset.range;
+      if (!nextRange || nextRange === state.range) return;
+      state.range = nextRange;
       refreshDashboard();
-    });
-  });
+    },
+    { followFocus: false }
+  );
 
-  document.querySelectorAll("#donut-mode-toggle .mini-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      state.donutMode = btn.dataset.mode;
-      document.querySelectorAll("#donut-mode-toggle .mini-btn").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
+  // Donut mode toggle is instant -> selection follows focus
+  wireTablistKeyboard(
+    $("donut-mode-toggle"),
+    (tab) => {
+      state.donutMode = tab.dataset.mode;
       if (state.dashboard) renderProtocolDonut(state.dashboard);
-    });
-  });
+    },
+    { followFocus: true }
+  );
 
   $("btn-flush").addEventListener("click", async () => {
     const btn = $("btn-flush");
@@ -720,58 +1568,7 @@
     }
   });
 
-  $("btn-copy-ssh").addEventListener("click", () => {
-    copyText($("ssh-tunnel-cmd").textContent, "SSH 隧道命令");
-  });
-
-  $("btn-open-add").addEventListener("click", () => {
-    $("form-add-device").reset();
-    populateAddModalProtocols();
-    openModal("modal-add");
-    $("input-device-name").focus();
-  });
-
-  $("form-add-device").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const form = e.currentTarget;
-    const submitBtn = $("btn-submit-add");
-    const checked = Array.from(form.querySelectorAll('input[name="protocols"]:checked')).map(
-      (el) => el.value
-    );
-    if (!checked.length) {
-      showToast("请至少选择一个协议", "error");
-      return;
-    }
-
-    const payload = {
-      name: $("input-device-name").value.trim(),
-      note: $("input-device-note").value.trim(),
-      protocols: checked,
-      vless_uuid: $("input-vless-uuid").value.trim() || null,
-      hy2_password: $("input-hy2-password").value.trim() || null,
-    };
-
-    submitBtn.disabled = true;
-    submitBtn.textContent = "校验并写入中...";
-    try {
-      const res = await apiFetch("/api/devices", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      closeModal("modal-add");
-      showToast(`设备 ${res.device.name} 已创建并生效（${res.reload}）`);
-      await Promise.all([refreshDashboard(), refreshAudit()]);
-      if (res.share) renderQrModal(res.share);
-    } catch (err) {
-      showToast(`创建失败: ${err.message}`, "error");
-    } finally {
-      submitBtn.disabled = false;
-      submitBtn.textContent = "创建并生成二维码";
-    }
-  });
-
-  // Table delegated actions (QR, Revoke, Restore, Delete)
-  $("devices-tbody").addEventListener("click", async (e) => {
+  devicesTbody.addEventListener("click", async (e) => {
     const btn = e.target.closest("button[data-action]");
     if (!btn) return;
     const action = btn.dataset.action;
@@ -780,7 +1577,7 @@
     if (action === "qr") {
       try {
         const bundle = await apiFetch(`/api/devices/${encodeURIComponent(name)}/share`);
-        renderQrModal(bundle);
+        openQrModal(bundle);
       } catch (err) {
         showToast(`获取二维码失败: ${err.message}`, "error");
       }
@@ -790,7 +1587,8 @@
     if (action === "revoke") {
       state.pendingRevoke = name;
       $("revoke-target-name").textContent = name;
-      openModal("modal-revoke");
+      $("revoke-error").hidden = true;
+      $("modal-revoke").showModal();
       return;
     }
 
@@ -801,9 +1599,12 @@
           method: "POST",
           body: JSON.stringify({ rotate_credentials: true }),
         });
-        showToast(`已恢复设备 ${name} 并签发新密钥`);
         await Promise.all([refreshDashboard(), refreshAudit()]);
-        if (res.share) renderQrModal(res.share);
+        if (res.share) {
+          openQrModal(res.share);
+        } else {
+          showToast(`已恢复设备 ${name} 并签发新密钥`);
+        }
       } catch (err) {
         showToast(`恢复失败: ${err.message}`, "error");
       } finally {
@@ -813,14 +1614,10 @@
     }
 
     if (action === "delete") {
-      if (!window.confirm(`删除已吊销设备 ${name} 的记录？（历史流量统计会继续保留）`)) return;
-      try {
-        await apiFetch(`/api/devices/${encodeURIComponent(name)}`, { method: "DELETE" });
-        showToast(`已删除设备记录 ${name}`);
-        await Promise.all([refreshDashboard(), refreshAudit()]);
-      } catch (err) {
-        showToast(`删除失败: ${err.message}`, "error");
-      }
+      state.pendingDelete = name;
+      $("delete-target-name").textContent = name;
+      $("delete-error").hidden = true;
+      $("modal-delete").showModal();
     }
   });
 
@@ -828,17 +1625,20 @@
     const target = state.pendingRevoke;
     if (!target) return;
     const btn = $("btn-confirm-revoke");
+    const errBox = $("revoke-error");
+    errBox.hidden = true;
     btn.disabled = true;
     btn.textContent = "吊销中...";
     try {
       const res = await apiFetch(`/api/devices/${encodeURIComponent(target)}/revoke`, {
         method: "POST",
       });
-      closeModal("modal-revoke");
+      await closeTopLayerDialog($("modal-revoke"));
       showToast(`已吊销 ${target} 并重载 sing-box（${res.reload}）`);
       await Promise.all([refreshDashboard(), refreshAudit()]);
     } catch (err) {
-      showToast(`吊销失败: ${err.message}`, "error");
+      errBox.textContent = `吊销失败: ${err.message}`;
+      errBox.hidden = false;
     } finally {
       btn.disabled = false;
       btn.textContent = "确认吊销并重载";
@@ -846,25 +1646,34 @@
     }
   });
 
-  document.querySelectorAll("[data-close]").forEach((btn) => {
-    btn.addEventListener("click", () => closeModal(btn.dataset.close));
-  });
-
-  document.querySelectorAll(".modal-backdrop").forEach((backdrop) => {
-    backdrop.addEventListener("click", (e) => {
-      if (e.target === backdrop) closeModal(backdrop.id);
-    });
-  });
-
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      ["modal-add", "modal-qr", "modal-revoke"].forEach(closeModal);
+  $("btn-confirm-delete").addEventListener("click", async () => {
+    const target = state.pendingDelete;
+    if (!target) return;
+    const btn = $("btn-confirm-delete");
+    const errBox = $("delete-error");
+    errBox.hidden = true;
+    btn.disabled = true;
+    try {
+      await apiFetch(`/api/devices/${encodeURIComponent(target)}`, { method: "DELETE" });
+      await closeTopLayerDialog($("modal-delete"));
+      showToast(`已删除设备记录 ${target}`);
+      await Promise.all([refreshDashboard(), refreshAudit()]);
+    } catch (err) {
+      errBox.textContent = `删除失败: ${err.message}`;
+      errBox.hidden = false;
+    } finally {
+      btn.disabled = false;
+      state.pendingDelete = null;
     }
   });
 
-  // Initial load + periodic auto-refresh every 15s
+  // --- Bootstrap ---
+
+  setupDialogs();
+  setupFormValidationSync($("form-add-device"));
   refreshDashboard();
   refreshAudit();
+
   state.pollTimer = setInterval(() => {
     if (!document.hidden) refreshDashboard();
   }, 15000);
