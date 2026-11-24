@@ -1,0 +1,24 @@
+{
+  "_comment": "将以下 experimental 片段合并到现有 /etc/sing-box/config.json（需 sing-box version 包含 with_v2ray_api）",
+  "experimental": {
+    "v2ray_api": {
+      "listen": "127.0.0.1:10085",
+      "stats": {
+        "enabled": true,
+        "inbounds": [
+          "vless-tokyo-in",
+          "hy2-sg-in"
+        ],
+        "outbounds": [
+          "tokyo-vless-out",
+          "direct"
+        ],
+        "users": [
+          "owrt-router",
+          "mac",
+          "mobile"
+        ]
+      }
+    }
+  }
+}

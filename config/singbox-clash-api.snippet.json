@@ -1,0 +1,9 @@
+{
+  "_comment": "将以下 experimental 片段合并到现有 /etc/sing-box/config.json（官方预编译包默认带 with_clash_api，无需更换二进制）",
+  "experimental": {
+    "clash_api": {
+      "external_controller": "127.0.0.1:9090",
+      "secret": ""
+    }
+  }
+}

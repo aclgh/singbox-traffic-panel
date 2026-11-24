@@ -1,0 +1,116 @@
+# singbox-traffic-panel 生产配置模板
+# 复制本文件为 config/panel.yaml 并按你的新加坡 VPS 实际情况修改
+
+server:
+  # 强烈建议始终保持 127.0.0.1（外网不可扫描），平时通过 SSH 隧道访问：
+  #   ssh -L 8088:127.0.0.1:8088 <你的新加坡VPS>
+  host: "127.0.0.1"
+  port: 8088
+  # 默认拒绝监听公网地址；如确需监听非回环地址，必须同时设置 allow_non_loopback: true 和 api_token
+  allow_non_loopback: false
+  api_token: ""
+  timezone: "Asia/Singapore"
+  # 仅用于仪表盘上展示可一键复制的 SSH 隧道命令提示
+  ssh_host_hint: "root@sg-vps"
+
+storage:
+  db_path: "./data/traffic.db"
+  backup_dir: "./data/backups"
+  max_backups: 20
+
+collector:
+  # 数据来源：
+  # - v2ray_api : 最准、不漏短连接（需 sing-box version 包含 with_v2ray_api 标签）
+  # - clash_api : 官方包默认自带，无需换二进制（通过 WebSocket /connections 追踪增量）
+  # - auto      : 启动时先探测 v2ray_api，不可用则自动降级到 clash_api
+  # - mock      : 演示模式模拟数据
+  source: "auto"
+  # 每 10~30 秒把增量持久化写入 SQLite（重启不丢数据）
+  flush_interval_seconds: 15
+
+  v2ray_api:
+    address: "127.0.0.1:10085"
+    # true 表示每次 QueryStats 原子读取并清零计数（最准确、重启无偏差）
+    reset_on_poll: true
+    timeout_seconds: 5.0
+
+  clash_api:
+    ws_url: "ws://127.0.0.1:9090/connections"
+    secret: ""
+    reconnect_interval_seconds: 3.0
+
+singbox:
+  # 你现有的纯净 sing-box 配置文件路径（修改前会自动备份并执行 sing-box check）
+  config_path: "/etc/sing-box/config.json"
+  binary_path: "/usr/bin/sing-box"
+  validate_before_reload: true
+  reload_command: "systemctl reload-or-restart sing-box"
+  # 新增/吊销设备时自动同步更新 experimental.v2ray_api.stats.users
+  sync_v2ray_api_users: true
+  dry_run: false
+
+oci_quota:
+  # Oracle Cloud Infrastructure Always Free 每月 10 TB 免费出站额度
+  monthly_limit_tb: 10.0
+  # 1000 = 十进制 TB（云厂商标准 1 TB = 10^12 字节）；如偏好二进制 TiB 可改为 1024
+  unit_base: 1000
+  # 账期重置日（1-28，默认每月 1 号）
+  billing_cycle_day: 1
+  # total (上行+下行) | download | upload
+  count_mode: "total"
+  warn_percent: 70.0
+  danger_percent: 85.0
+
+# 协议与计费倍率配置：
+# - 东京中转 VLESS 按 2.0× 计入 OCI 免费额度
+# - 新加坡直连 Hysteria2 按 1.0× 计入 OCI 免费额度
+protocols:
+  - key: "tokyo_vless"
+    label: "东京 VLESS (中转)"
+    protocol_type: "vless"
+    # 请修改为你 sing-box/config.json 中 VLESS inbound 的实际 tag
+    inbound_tag: "vless-tokyo-in"
+    # 若你的统计维度按 outbound 区分，可将 stats_dimension 设为 outbound 并填写出站 tag
+    outbound_tags:
+      - "tokyo-vless-out"
+      - "tokyo-out"
+    stats_dimension: "inbound"
+    oci_multiplier: 2.0
+    color: "#38bdf8"
+    client:
+      # 客户端连接的公网域名或 IP
+      server_host: "sg.example.com"
+      # 留空(null)则自动从 sing-box/config.json 对应 inbound 的 listen_port 读取
+      server_port: null
+      # 留空(null)则自动从 inbound.tls.server_name 读取
+      sni: null
+      # REALITY 公钥 pbk：留空时自动从 config.json 的 reality.private_key 推导！
+      public_key: ""
+      # 留空则自动取 reality.short_id 第一个值
+      short_id: ""
+      fingerprint: "chrome"
+      flow: "xtls-rprx-vision"
+      remark_prefix: "Tokyo-VLESS"
+
+  - key: "sg_hysteria2"
+    label: "新加坡 Hysteria2 (直连)"
+    protocol_type: "hysteria2"
+    # 请修改为你 sing-box/config.json 中 Hysteria2 inbound 的实际 tag
+    inbound_tag: "hy2-sg-in"
+    outbound_tags:
+      - "direct"
+    stats_dimension: "inbound"
+    oci_multiplier: 1.0
+    color: "#a78bfa"
+    client:
+      server_host: "sg.example.com"
+      server_port: null
+      sni: null
+      insecure: false
+      alpn: ""
+      remark_prefix: "SG-Hy2"
+
+default_devices:
+  - "owrt-router"
+  - "mac"
+  - "mobile"

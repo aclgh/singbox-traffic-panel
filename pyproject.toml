@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "singbox-traffic-panel"
+version = "0.1.0"
+description = "Lightweight loopback-only traffic monitor & device credential panel for pure sing-box deployments"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0,<1.0.0",
+    "uvicorn>=0.32.0,<1.0.0",
+    "websockets>=13.0,<17.0",
+    "h2>=4.1.0,<5.0.0",
+    "pyyaml>=6.0.1,<7.0.0",
+    "segno>=1.6.1,<2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.27.0",
+]
+
+[project.scripts]
+singbox-traffic-panel = "singbox_panel.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/singbox_panel"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.27.0",
+]
+
+[tool.uv]
+package = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["src"]

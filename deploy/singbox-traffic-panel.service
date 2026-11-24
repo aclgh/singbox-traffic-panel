@@ -1,0 +1,19 @@
+[Unit]
+Description=sing-box Lightweight Traffic Panel (Loopback Only)
+After=network.target sing-box.service
+Wants=sing-box.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/singbox-traffic-panel
+ExecStart=/opt/singbox-traffic-panel/.venv/bin/python -m singbox_panel --config /opt/singbox-traffic-panel/config/panel.yaml
+Restart=on-failure
+RestartSec=5
+MemoryMax=128M
+CPUQuota=30%
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
