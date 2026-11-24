@@ -50,8 +50,11 @@ python3 -m venv .venv
 bash deploy/check-singbox-tags.sh /usr/bin/sing-box
 ```
 
-- 如果输出包含 `with_v2ray_api`（推荐）：将 [`config/singbox-v2ray-api.snippet.json`](config/singbox-v2ray-api.snippet.json) 中的 `experimental.v2ray_api` 片段合并到你的 `/etc/sing-box/config.json`，确保 `inbounds` 和 `users`（如 `owrt-router`、`mac`、`mobile`）与你现有配置一致。
-- 如果使用官方默认包不带 `with_v2ray_api`：无需更换二进制，直接将 [`config/singbox-clash-api.snippet.json`](config/singbox-clash-api.snippet.json) 中的 `experimental.clash_api` 片段（监听 `127.0.0.1:9090`）合并到 `/etc/sing-box/config.json`。
+- **推荐（精确按设备 + 按协议统计）**：官方预编译 `sing-box` 默认不含 `with_v2ray_api`；如需按 `owrt-router` / `mac` / `mobile` 精确统计，可运行 [`deploy/build-singbox-v2ray-api.sh`](deploy/build-singbox-v2ray-api.sh) 从同版本官方源码编译带 `with_v2ray_api` 标签的二进制（默认仅编译到 `/tmp` 并做离线 `sing-box check`，验证无误后再手动切换）。随后将 [`config/singbox-v2ray-api.snippet.json`](config/singbox-v2ray-api.snippet.json) 合并到 `/etc/sing-box/config.json`，并通过 `--probe-v2ray-api` 确认采集正常：
+  ```bash
+  .venv/bin/python -m singbox_panel --config config/panel.yaml --probe-v2ray-api
+  ```
+- **备选（不换二进制，仅统计协议分布与 OCI 10 TB 总额）**：将 [`config/singbox-clash-api.snippet.json`](config/singbox-clash-api.snippet.json) 合并到 `/etc/sing-box/config.json`。注意官方 `sing-box` 的 `clash_api /connections` 不输出 `metadata.user`，协议与 OCI 估算正常，但设备流量会归入 `unknown`。
 
 重载 `sing-box` 前记得先校验：
 

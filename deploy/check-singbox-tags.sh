@@ -15,11 +15,11 @@ echo "$OUT"
 echo "----------------------------------------"
 
 if grep -q "with_v2ray_api" <<<"$OUT"; then
-  echo "[OK] 支持 with_v2ray_api -> 推荐在 panel.yaml 中使用 collector.source: v2ray_api（最准，不漏短连接）"
+  echo "[OK] 支持 with_v2ray_api -> 推荐在 panel.yaml 中使用 collector.source: v2ray_api（最准，按设备/协议精确统计，不漏短连接）"
 else
-  echo "[INFO] 未包含 with_v2ray_api 标签"
-  echo "       选项 A：直接使用官方默认自带的 clash_api（无需换二进制）"
-  echo "       选项 B：换成带 with_v2ray_api 编译标签的 sing-box 二进制"
+  echo "[INFO] 未包含 with_v2ray_api 标签（官方预编译二进制默认不带该标签）"
+  echo "       选项 A（推荐，精确按设备统计）：运行 deploy/build-singbox-v2ray-api.sh 用同版本官方源码编译带 with_v2ray_api 的二进制"
+  echo "       选项 B（仅协议/OCI 总额）：使用官方默认 clash_api（注意：clash_api /connections 不返回 metadata.user，设备维度会归为 unknown）"
 fi
 
 if grep -q "with_clash_api" <<<"$OUT"; then

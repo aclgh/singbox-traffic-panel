@@ -20,8 +20,8 @@ storage:
 
 collector:
   # 数据来源：
-  # - v2ray_api : 最准、不漏短连接（需 sing-box version 包含 with_v2ray_api 标签）
-  # - clash_api : 官方包默认自带，无需换二进制（通过 WebSocket /connections 追踪增量）
+  # - v2ray_api : 最准、按设备/协议精确统计、不漏短连接（需带 with_v2ray_api 标签编译的 sing-box，可用 deploy/build-singbox-v2ray-api.sh 构建）
+  # - clash_api : 官方预编译包默认自带，可按协议统计与估算 OCI 总额，但官方 /connections 不返回 metadata.user（设备流量会归为 unknown）
   # - auto      : 启动时先探测 v2ray_api，不可用则自动降级到 clash_api
   # - mock      : 演示模式模拟数据
   source: "auto"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import shutil
@@ -12,6 +13,7 @@ from pathlib import Path
 import uvicorn
 
 from .app import create_app
+from .collectors.grpc_v2ray import V2RayStatsClient
 from .config import AppConfig, load_config
 from .db import TrafficDatabase
 from .singbox_config import SingBoxConfigManager
@@ -126,6 +128,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Inspect panel.yaml and sing-box config.json compatibility, then exit.",
     )
     parser.add_argument(
+        "--probe-v2ray-api",
+        action="store_true",
+        help="Non-destructively query sing-box v2ray_api (reset=false) and print all counters, then exit.",
+    )
+    parser.add_argument(
         "--log-level",
         default="info",
         choices=["debug", "info", "warning", "error"],
@@ -158,6 +165,32 @@ def main(argv: list[str] | None = None) -> int:
         health = mgr.inspect_config_health()
         print(json.dumps(health, indent=2, ensure_ascii=False))
         return 0 if health.get("exists") and not health.get("error") else 1
+
+    if args.probe_v2ray_api:
+        client = V2RayStatsClient(
+            address=cfg.collector.v2ray_api.address,
+            timeout=cfg.collector.v2ray_api.timeout_seconds,
+        )
+        try:
+            stats = asyncio.run(client.query_stats(pattern="", reset=False))
+        except Exception as exc:
+            print(
+                f"[ERROR] v2ray_api 探测失败 ({cfg.collector.v2ray_api.address}): {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            json.dumps(
+                {
+                    "address": cfg.collector.v2ray_api.address,
+                    "count": len(stats),
+                    "stats": [{"name": s.name, "value": s.value} for s in stats],
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return 0
 
     print(
         f"sing-box Traffic Panel listening on http://{cfg.server.host}:{cfg.server.port} "

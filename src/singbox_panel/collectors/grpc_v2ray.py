@@ -95,7 +95,12 @@ def _skip_field(buf: bytes, pos: int, wire_type: int) -> int:
     raise ValueError(f"Unsupported protobuf wire type: {wire_type}")
 
 
-def encode_query_stats_request(pattern: str = "", reset: bool = False) -> bytes:
+def encode_query_stats_request(
+    pattern: str = "",
+    reset: bool = False,
+    patterns: list[str] | None = None,
+    regexp: bool = False,
+) -> bytes:
     """Encode v2ray.core.app.stats.command.QueryStatsRequest."""
     out = bytearray()
     if pattern:
@@ -105,6 +110,14 @@ def encode_query_stats_request(pattern: str = "", reset: bool = False) -> bytes:
         out.extend(encoded)
     if reset:
         out.append((2 << 3) | 0)  # field 2, varint (bool)
+        out.append(1)
+    for item in patterns or []:
+        encoded = item.encode("utf-8")
+        out.append((3 << 3) | 2)  # field 3, repeated string patterns
+        out.extend(_encode_varint(len(encoded)))
+        out.extend(encoded)
+    if regexp:
+        out.append((4 << 3) | 0)  # field 4, varint (bool regexp)
         out.append(1)
     return bytes(out)
 

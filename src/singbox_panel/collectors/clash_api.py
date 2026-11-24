@@ -49,6 +49,7 @@ class ClashApiCollector(BaseCollector):
         self._ws_last_error: str | None = None
         self._messages_received: int = 0
         self._live_connections: int = 0
+        self._observed_connections: int = 0
         self._missing_user_samples: int = 0
 
     def _ws_headers(self) -> dict[str, str]:
@@ -189,6 +190,7 @@ class ClashApiCollector(BaseCollector):
 
                 prev = self._active_conns.get(cid)
                 if prev is None:
+                    self._observed_connections += 1
                     user = self._extract_user(conn)
                     if user is None:
                         self._missing_user_samples += 1
@@ -272,6 +274,22 @@ class ClashApiCollector(BaseCollector):
         return device_deltas, protocol_deltas
 
     def diagnostics(self) -> dict[str, Any]:
+        missing = self._missing_user_samples
+        observed = self._observed_connections
+        if missing > 0 and missing >= observed:
+            hint = (
+                f"clash_api /connections 未返回 metadata.user（已采样 {missing}/{observed} 条连接全部缺失），"
+                "协议统计正常，但设备流量会归入 unknown；官方预编译 sing-box 默认不含 with_v2ray_api，"
+                "需使用带 with_v2ray_api 标签编译的 sing-box 并切换到 v2ray_api 精确按用户统计。"
+            )
+        elif missing > 0:
+            hint = (
+                f"clash_api /connections 中有 {missing}/{observed} 条连接缺少 metadata.user（已归入 unknown）；"
+                "如需完整按设备统计，请使用带 with_v2ray_api 标签编译的 sing-box 并切换到 v2ray_api。"
+            )
+        else:
+            hint = ""
+
         return {
             "source": self.source_name,
             "ws_url": self.ws_url,
@@ -280,10 +298,7 @@ class ClashApiCollector(BaseCollector):
             "messages_received": self._messages_received,
             "live_connections": self._live_connections,
             "tracked_connections": len(self._active_conns),
-            "missing_user_samples": self._missing_user_samples,
-            "hint": (
-                "检测到部分连接缺少 metadata.user，建议升级 sing-box 或切换到 v2ray_api 精确统计"
-                if self._missing_user_samples > 0
-                else ""
-            ),
+            "observed_connections": observed,
+            "missing_user_samples": missing,
+            "hint": hint,
         }
