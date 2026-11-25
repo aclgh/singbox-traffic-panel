@@ -97,6 +97,10 @@ class ClientShareConfig:
     server_host: str = "sg.example.com"
     server_port: int | None = None
     sni: str | None = None
+    tls_enabled: bool | None = None
+    transport_type: str = ""
+    ws_path: str = ""
+    ws_host: str = ""
     public_key: str = ""
     short_id: str = ""
     fingerprint: str = "chrome"
@@ -202,6 +206,10 @@ def _build_client_config(raw: dict[str, Any] | None) -> ClientShareConfig:
         server_host=str(raw.get("server_host", "sg.example.com")),
         server_port=int(raw["server_port"]) if raw.get("server_port") is not None else None,
         sni=str(raw["sni"]) if raw.get("sni") else None,
+        tls_enabled=bool(raw["tls_enabled"]) if raw.get("tls_enabled") is not None else None,
+        transport_type=str(raw.get("transport_type", "") or ""),
+        ws_path=str(raw.get("ws_path", "") or ""),
+        ws_host=str(raw.get("ws_host", "") or ""),
         public_key=str(raw.get("public_key", "") or ""),
         short_id=str(raw.get("short_id", "") or ""),
         fingerprint=str(raw.get("fingerprint", "chrome") or "chrome"),

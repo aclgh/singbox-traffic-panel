@@ -890,17 +890,21 @@
     $("kpi-up-bytes").textContent = formatBytes(data.summary.upload_bytes, base);
     $("kpi-down-bytes").textContent = formatBytes(data.summary.download_bytes, base);
 
-    const p0 = data.protocols[0];
-    const p1 = data.protocols[1];
-    if (p0) {
-      $("kpi-proto-0-label").textContent = `${p0.label}（${p0.multiplier}×）`;
-      $("kpi-proto-0-bytes").textContent = formatBytes(p0.total_bytes, base);
-      $("kpi-proto-0-sub").textContent = `原始占比 ${p0.share_percent}% · OCI 计入 ${formatBytes(p0.oci_weighted_bytes, base)}`;
-    }
-    if (p1) {
-      $("kpi-proto-1-label").textContent = `${p1.label}（${p1.multiplier}×）`;
-      $("kpi-proto-1-bytes").textContent = formatBytes(p1.total_bytes, base);
-      $("kpi-proto-1-sub").textContent = `原始占比 ${p1.share_percent}% · OCI 计入 ${formatBytes(p1.oci_weighted_bytes, base)}`;
+    const grid = $("kpi-grid");
+    const devicesCard = $("kpi-devices-count")?.closest(".kpi-card");
+    if (grid && devicesCard) {
+      grid.querySelectorAll(".kpi-card[data-proto-kpi]").forEach((el) => el.remove());
+      for (const p of data.protocols || []) {
+        const card = document.createElement("article");
+        card.className = "card kpi-card";
+        card.dataset.protoKpi = p.key;
+        card.innerHTML = `
+          <div class="kpi-label">${escapeHtml(p.label)}（${p.multiplier}×）</div>
+          <div class="kpi-value mono">${escapeHtml(formatBytes(p.total_bytes, base))}</div>
+          <div class="kpi-sub">原始占比 ${p.share_percent}% · OCI 计入 ${escapeHtml(formatBytes(p.oci_weighted_bytes, base))}</div>
+        `;
+        grid.insertBefore(card, devicesCard);
+      }
     }
 
     $("kpi-devices-count").textContent = `${data.summary.active_devices} / ${data.summary.total_devices}`;
@@ -914,9 +918,13 @@
           ? `<span class="pill pill-danger">✕ 已吊销</span>`
           : `<span class="pill pill-muted">○ 仅观测</span>`;
 
+    const enabled = Array.isArray(dev.enabled_protocols) ? dev.enabled_protocols : [];
     const protoTags = [];
     if (dev.has_vless) protoTags.push(`<span class="pill pill-proto">VLESS</span>`);
     if (dev.has_hysteria2) protoTags.push(`<span class="pill pill-proto pill-proto-hy2">Hy2</span>`);
+    if (enabled.some((k) => /cf|cdn|ws/i.test(String(k)))) {
+      protoTags.push(`<span class="pill pill-proto pill-proto-cf">CF</span>`);
+    }
 
     let actionsHtml = "";
     if (dev.status === "active") {

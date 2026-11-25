@@ -33,14 +33,19 @@ def build_vless_uri(
     port = int(params["server_port"])
     query: list[tuple[str, str]] = [("encryption", "none")]
 
-    effective_flow = flow if flow is not None else str(params.get("flow") or "")
+    transport_type = str(params.get("transport_type") or "tcp")
+    effective_flow = ""
+    if transport_type == "tcp":
+        effective_flow = flow if flow is not None else str(params.get("flow") or "")
     if effective_flow:
         query.append(("flow", effective_flow))
 
-    transport_type = str(params.get("transport_type") or "tcp")
     query.append(("type", transport_type))
-    if transport_type == "ws" and params.get("transport_path"):
-        query.append(("path", str(params["transport_path"])))
+    if transport_type == "ws":
+        if params.get("ws_host") or params.get("sni"):
+            query.append(("host", str(params.get("ws_host") or params.get("sni"))))
+        if params.get("transport_path"):
+            query.append(("path", str(params["transport_path"])))
     elif transport_type == "grpc" and params.get("transport_service_name"):
         query.append(("serviceName", str(params["transport_service_name"])))
 
@@ -106,6 +111,7 @@ def build_singbox_outbound_snippet(
 ) -> dict[str, Any]:
     """Generate a ready-to-paste sing-box client outbound JSON object."""
     if proto.protocol_type == "vless":
+        transport_type = str(params.get("transport_type") or "tcp")
         outbound: dict[str, Any] = {
             "type": "vless",
             "tag": f"{proto.key}-{device['name']}",
@@ -113,9 +119,10 @@ def build_singbox_outbound_snippet(
             "server_port": int(params["server_port"]),
             "uuid": device.get("vless_uuid") or "",
         }
-        flow = device.get("vless_flow") or params.get("flow") or ""
-        if flow:
-            outbound["flow"] = flow
+        if transport_type == "tcp":
+            flow = device.get("vless_flow") or params.get("flow") or ""
+            if flow:
+                outbound["flow"] = flow
         if params.get("reality_enabled"):
             outbound["tls"] = {
                 "enabled": True,
@@ -128,10 +135,29 @@ def build_singbox_outbound_snippet(
                 },
             }
         elif params.get("tls_enabled", True):
-            outbound["tls"] = {
+            tls_obj: dict[str, Any] = {
                 "enabled": True,
                 "server_name": params.get("sni") or params["server_host"],
-                "insecure": bool(params.get("insecure", False)),
+                "utls": {"enabled": True, "fingerprint": params.get("fingerprint") or "chrome"},
+            }
+            if params.get("insecure"):
+                tls_obj["insecure"] = True
+            outbound["tls"] = tls_obj
+
+        if transport_type == "ws":
+            ws_obj: dict[str, Any] = {
+                "type": "ws",
+                "path": params.get("transport_path") or "/",
+                "headers": {"Host": params.get("ws_host") or params.get("sni") or params["server_host"]},
+            }
+            if params.get("max_early_data"):
+                ws_obj["max_early_data"] = int(params["max_early_data"])
+                ws_obj["early_data_header_name"] = params.get("early_data_header_name") or "Sec-WebSocket-Protocol"
+            outbound["transport"] = ws_obj
+        elif transport_type == "grpc" and params.get("transport_service_name"):
+            outbound["transport"] = {
+                "type": "grpc",
+                "service_name": str(params["transport_service_name"]),
             }
         return outbound
 
@@ -223,7 +249,11 @@ def build_device_share_bundle(
                     "qr_svg_data_uri": render_qr_svg_data_uri(uri),
                     "server": f"{params['server_host']}:{params['server_port']}",
                     "sni": params.get("sni") or "",
-                    "security": "REALITY" if params.get("reality_enabled") else "TLS",
+                    "security": (
+                        "REALITY"
+                        if params.get("reality_enabled")
+                        else ("WS + TLS" if params.get("transport_type") == "ws" else "TLS")
+                    ),
                     "credential_preview": device["vless_uuid"],
                     "warnings": warnings,
                     "singbox_outbound": outbound,

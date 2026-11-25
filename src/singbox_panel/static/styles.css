@@ -436,7 +436,7 @@
     }
     @container (min-width: 900px) {
       .kpi-grid {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
       }
     }
   }
@@ -598,6 +598,12 @@
     background: color-mix(in oklab, var(--accent) 14%, transparent);
     color: var(--accent);
     border-color: color-mix(in oklab, var(--accent) 34%, transparent);
+  }
+
+  .pill-proto-cf {
+    background: color-mix(in oklab, var(--ok) 14%, transparent);
+    color: var(--ok);
+    border-color: color-mix(in oklab, var(--ok) 34%, transparent);
   }
 
   /* Buttons (WCAG 2.5.8 >= 24px, WCAG 2.5.5 >= 44px on coarse touch screens) */

@@ -122,13 +122,24 @@ class SingBoxConfigManager:
             elif isinstance(sids, str):
                 short_id = sids
 
-        # Detect default flow from existing VLESS users if present
-        detected_flow = proto.client.flow
-        if proto.protocol_type == "vless" and not detected_flow:
-            for u in inbound.get("users") or []:
-                if isinstance(u, dict) and u.get("flow"):
-                    detected_flow = str(u["flow"])
-                    break
+        transport_type = str(proto.client.transport_type or transport.get("type") or "tcp")
+        transport_path = str(proto.client.ws_path or transport.get("path") or "")
+        ws_host = str(proto.client.ws_host or sni or proto.client.server_host)
+        tls_enabled = (
+            proto.client.tls_enabled
+            if proto.client.tls_enabled is not None
+            else bool(tls.get("enabled", True))
+        )
+
+        # Detect default flow from existing VLESS users only for raw TCP transport
+        detected_flow = ""
+        if proto.protocol_type == "vless" and transport_type == "tcp":
+            detected_flow = proto.client.flow
+            if not detected_flow:
+                for u in inbound.get("users") or []:
+                    if isinstance(u, dict) and u.get("flow"):
+                        detected_flow = str(u["flow"])
+                        break
 
         return {
             "inbound_found": bool(inbound),
@@ -136,14 +147,17 @@ class SingBoxConfigManager:
             "server_host": proto.client.server_host,
             "server_port": int(port) if port else 443,
             "sni": sni or proto.client.server_host,
-            "tls_enabled": bool(tls.get("enabled", True)),
+            "tls_enabled": tls_enabled,
             "reality_enabled": reality_enabled,
             "public_key": public_key,
             "short_id": short_id,
             "fingerprint": proto.client.fingerprint or "chrome",
             "flow": detected_flow,
-            "transport_type": str(transport.get("type") or "tcp"),
-            "transport_path": str(transport.get("path") or ""),
+            "transport_type": transport_type,
+            "transport_path": transport_path,
+            "ws_host": ws_host,
+            "max_early_data": int(transport.get("max_early_data") or 0),
+            "early_data_header_name": str(transport.get("early_data_header_name") or ""),
             "transport_service_name": str(transport.get("service_name") or ""),
             "obfs_type": str(obfs.get("type") or ""),
             "obfs_password": str(obfs.get("password") or ""),
@@ -240,13 +254,15 @@ class SingBoxConfigManager:
                             name,
                             {
                                 "vless_uuid": None,
-                                "vless_flow": proto.client.flow,
+                                "vless_flow": "",
                                 "hy2_password": None,
                                 "enabled_protocols": [],
                             },
                         )
-                        entry["vless_uuid"] = uid
-                        entry["vless_flow"] = str(user.get("flow") or "")
+                        if not entry["vless_uuid"]:
+                            entry["vless_uuid"] = uid
+                        if user.get("flow"):
+                            entry["vless_flow"] = str(user["flow"])
                         if proto.key not in entry["enabled_protocols"]:
                             entry["enabled_protocols"].append(proto.key)
                     elif proto.protocol_type == "hysteria2":
@@ -522,24 +538,30 @@ class SingBoxConfigManager:
                 ]
 
                 if proto.protocol_type == "vless":
-                    if vless_uuid and vless_uuid.strip():
-                        # Validate UUID syntax
-                        final_uuid = str(uuid.UUID(vless_uuid.strip()))
-                    else:
-                        final_uuid = str(uuid.uuid4())
-                    if vless_flow is not None:
-                        final_flow = vless_flow.strip()
-                    else:
-                        # Inherit existing VLESS flow convention if present
-                        existing_flow = next(
-                            (str(u["flow"]) for u in users if isinstance(u, dict) and u.get("flow")),
-                            proto.client.flow,
-                        )
-                        final_flow = existing_flow
+                    if not final_uuid:
+                        if vless_uuid and vless_uuid.strip():
+                            # Validate UUID syntax
+                            final_uuid = str(uuid.UUID(vless_uuid.strip()))
+                        else:
+                            final_uuid = str(uuid.uuid4())
+
+                    inbound_transport = inbound.get("transport") if isinstance(inbound.get("transport"), dict) else {}
+                    transport_type = str(inbound_transport.get("type") or "tcp")
+                    inbound_flow = ""
+                    if transport_type == "tcp":
+                        if vless_flow is not None:
+                            inbound_flow = vless_flow.strip()
+                        else:
+                            inbound_flow = next(
+                                (str(u["flow"]) for u in users if isinstance(u, dict) and u.get("flow")),
+                                proto.client.flow,
+                            )
+                        if inbound_flow:
+                            final_flow = inbound_flow
 
                     user_obj: dict[str, Any] = {"name": clean_name, "uuid": final_uuid}
-                    if final_flow:
-                        user_obj["flow"] = final_flow
+                    if inbound_flow:
+                        user_obj["flow"] = inbound_flow
                     users.append(user_obj)
                     enabled_keys.append(proto.key)
 
