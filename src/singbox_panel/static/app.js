@@ -687,6 +687,7 @@
       header.removeAttribute("aria-sort");
     }
     th.setAttribute("aria-sort", direction);
+    syncMobileSortPills();
 
     const ordered = sortRowsInPlace(rows, th.cellIndex, th.dataset.type || "text", direction);
     const update = () => reorderNodes(devicesTbody, ordered);
@@ -712,6 +713,32 @@
       }
     }
   }
+
+  const mobileSortLabels = {
+    total: "总计",
+    download: "下行",
+    upload: "上行",
+    name: "设备名",
+  };
+
+  function syncMobileSortPills() {
+    for (const pill of document.querySelectorAll(".mobile-sort-pill")) {
+      const key = pill.dataset.mobileSort;
+      const isActive = key === state.sortKey;
+      pill.setAttribute("aria-pressed", String(isActive));
+      const base = mobileSortLabels[key] || key;
+      pill.textContent = isActive ? `${base} ${state.sortDir === "ascending" ? "↑" : "↓"}` : base;
+    }
+  }
+
+  document.querySelector(".mobile-sort-bar")?.addEventListener("click", (e) => {
+    const pill = e.target.closest("button[data-mobile-sort]");
+    if (!pill || !devicesTable) return;
+    const key = pill.dataset.mobileSort;
+    const th = devicesTable.querySelector(`th[data-sort-key="${CSS.escape(key)}"]`);
+    const btn = th?.querySelector("button");
+    if (btn) applyTableSort(btn, { animate: true, announce: true });
+  });
 
   if (devicesTable) {
     if ("commandForElement" in HTMLButtonElement.prototype) {
@@ -839,7 +866,7 @@
 
     const startDate = (oci.cycle_start || "").slice(0, 10);
     const endDate = (oci.cycle_end || "").slice(0, 10);
-    $("oci-cycle-range").textContent = `账期 ${startDate} ~ ${endDate} · 日均 ${formatBytes(oci.daily_burn_bytes, base)}/天`;
+    $("oci-cycle-range").innerHTML = `账期 <span class="nowrap">${escapeHtml(startDate)} ~ ${escapeHtml(endDate)}</span> · <span class="nowrap">日均 ${escapeHtml(formatBytes(oci.daily_burn_bytes, base))}/天</span>`;
 
     $("oci-marker-warn").style.insetInlineStart = `${Math.min(98, oci.warn_percent)}%`;
     $("oci-marker-danger").style.insetInlineStart = `${Math.min(98, oci.danger_percent)}%`;
@@ -864,9 +891,11 @@
       .map(
         (item) => `
           <div class="oci-chip">
-            <span class="dot" style="background:${escapeHtml(item.color)}" aria-hidden="true"></span>
-            <span>${escapeHtml(item.label)}</span>
-            <span class="mono">${formatBytes(item.total_bytes, base)} × ${item.multiplier} = <strong>${formatBytes(item.oci_weighted_bytes, base)}</strong></span>
+            <span class="oci-chip-head">
+              <span class="dot" style="background:${escapeHtml(item.color)}" aria-hidden="true"></span>
+              <span>${escapeHtml(item.label)}</span>
+            </span>
+            <span class="mono oci-chip-val">${formatBytes(item.total_bytes, base)} × ${item.multiplier} = <strong>${formatBytes(item.oci_weighted_bytes, base)}</strong></span>
           </div>
         `
       )
@@ -928,14 +957,14 @@
     const shareVal = Math.min(100, Math.max(0, Number(dev.share_percent || 0)));
 
     return `
-      <td data-value="${escapeHtml(dev.name)}">
+      <th scope="row" data-value="${escapeHtml(dev.name)}">
         <div class="dev-name-row">
           <span class="dev-name">${escapeHtml(dev.name)}</span>
           ${statusPill}
           ${protoTags.join("")}
         </div>
         ${dev.note ? `<div class="dev-note">${escapeHtml(dev.note)}</div>` : ""}
-      </td>
+      </th>
       <td class="num mono up-color" data-value="${Number(dev.upload_bytes || 0)}">${formatBytes(dev.upload_bytes, base)}</td>
       <td class="num mono down-color" data-value="${Number(dev.download_bytes || 0)}">${formatBytes(dev.download_bytes, base)}</td>
       <td class="num share-cell" data-value="${Number(dev.total_bytes || 0)}">
@@ -1066,16 +1095,19 @@
       return;
     }
 
-    const width = 920;
-    const height = 224;
-    const pad = { top: 16, right: 16, bottom: 32, left: 68 };
-    const plotW = width - pad.left - pad.right;
+    const wrap = host.closest(".trend-chart-wrap") || host;
+    const width = Math.max(260, Math.floor(wrap.clientWidth || host.clientWidth || 720));
+    host.dataset.renderedWidth = String(width);
+    const isNarrow = width < 480;
+    const height = isNarrow ? 200 : 224;
+    const pad = { top: 14, right: 10, bottom: 30, left: isNarrow ? 54 : 68 };
+    const plotW = Math.max(120, width - pad.left - pad.right);
     const plotH = height - pad.top - pad.bottom;
 
     const maxVal = Math.max(1, ...points.map((p) => p.total_bytes));
-    const gridTicks = [0, 0.25, 0.5, 0.75, 1];
+    const gridTicks = isNarrow ? [0, 0.5, 1] : [0, 0.25, 0.5, 0.75, 1];
     const barSlot = plotW / points.length;
-    const barW = Math.max(4, Math.min(26, barSlot * 0.64));
+    const barW = Math.max(3, Math.min(26, barSlot * 0.64));
 
     const gridLines = gridTicks
       .map((t) => {
@@ -1083,12 +1115,13 @@
         const val = maxVal * t;
         return `
           <line x1="${pad.left}" y1="${y.toFixed(1)}" x2="${width - pad.right}" y2="${y.toFixed(1)}" stroke="var(--border)" stroke-dasharray="3 4" />
-          <text x="${pad.left - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" fill="var(--text-dim)" font-size="10.5" font-family="var(--font-mono)">${formatBytes(val, base)}</text>
+          <text x="${pad.left - 6}" y="${(y + 4).toFixed(1)}" text-anchor="end" fill="var(--text-dim)" font-size="${isNarrow ? 9.5 : 10.5}" font-family="var(--font-mono)">${formatBytes(val, base)}</text>
         `;
       })
       .join("");
 
-    const labelStep = Math.max(1, Math.ceil(points.length / 10));
+    const maxLabels = isNarrow ? 5 : 10;
+    const labelStep = Math.max(1, Math.ceil(points.length / maxLabels));
     const bars = points
       .map((pt, idx) => {
         const xCenter = pad.left + barSlot * idx + barSlot / 2;
@@ -1098,52 +1131,57 @@
         const upH = Math.max(0, totalH - downH);
         const yDown = pad.top + plotH - downH;
         const yUp = yDown - upH;
-        const showLabel = idx % labelStep === 0 || idx === points.length - 1;
+        const showLabel = idx % labelStep === 0 || (idx === points.length - 1 && points.length - 1 - Math.floor((points.length - 1) / labelStep) * labelStep >= Math.ceil(labelStep / 2));
 
         return `
           <g class="trend-bar-group" data-idx="${idx}" style="cursor:pointer">
             <rect x="${(pad.left + barSlot * idx).toFixed(1)}" y="${pad.top}" width="${barSlot.toFixed(1)}" height="${plotH}" fill="transparent" />
             <rect x="${x.toFixed(1)}" y="${yDown.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0, downH).toFixed(1)}" rx="2" fill="var(--primary)" fill-opacity="0.88" />
             <rect x="${x.toFixed(1)}" y="${yUp.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0, upH).toFixed(1)}" rx="2" fill="var(--ok)" fill-opacity="0.92" />
-            ${showLabel ? `<text x="${xCenter.toFixed(1)}" y="${height - 10}" text-anchor="middle" fill="var(--text-dim)" font-size="10.5" font-family="var(--font-mono)">${escapeHtml(pt.label)}</text>` : ""}
+            ${showLabel ? `<text x="${xCenter.toFixed(1)}" y="${height - 10}" text-anchor="middle" fill="var(--text-dim)" font-size="${isNarrow ? 9.5 : 10.5}" font-family="var(--font-mono)">${escapeHtml(pt.label)}</text>` : ""}
           </g>
         `;
       })
       .join("");
 
     host.innerHTML = `
-      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="流量趋势柱状图">
+      <svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="流量趋势柱状图">
         ${gridLines}
         ${bars}
       </svg>
     `;
 
-    function positionTooltip(e) {
+    function showTooltipFor(idx, clientX, clientY) {
+      const pt = points[idx];
+      if (!pt) return;
+      tooltip.innerHTML = `
+        <div style="font-weight:700;margin-block-end:4px" class="mono">${escapeHtml(pt.date || pt.label)}</div>
+        <div class="mono down-color">下行 ↓ ${formatBytes(pt.download_bytes, base)}</div>
+        <div class="mono up-color">上行 ↑ ${formatBytes(pt.upload_bytes, base)}</div>
+        <div class="mono" style="margin-block-start:3px;border-block-start:1px solid var(--border);padding-block-start:3px">
+          总计 ${formatBytes(pt.total_bytes, base)}
+        </div>
+        ${pt.oci_weighted_bytes > 0 ? `<div class="mono meta-text">OCI 加权 ${formatBytes(pt.oci_weighted_bytes, base)}</div>` : ""}
+      `;
+      tooltip.hidden = false;
       const rect = host.getBoundingClientRect();
-      const left = Math.min(rect.width - 185, Math.max(8, e.clientX - rect.left + 14));
-      const top = Math.max(8, e.clientY - rect.top - 24);
+      const tipW = tooltip.offsetWidth || 170;
+      const left = Math.min(Math.max(4, rect.width - tipW - 4), Math.max(4, clientX - rect.left - tipW / 2));
+      const top = Math.max(4, Math.min(rect.height - 96, clientY - rect.top - 96));
       tooltip.style.insetInlineStart = `${left}px`;
       tooltip.style.insetBlockStart = `${top}px`;
     }
 
     host.querySelectorAll(".trend-bar-group").forEach((group) => {
-      group.addEventListener("mouseenter", (e) => {
-        const pt = points[Number(group.dataset.idx)];
-        tooltip.innerHTML = `
-          <div style="font-weight:700;margin-block-end:4px" class="mono">${escapeHtml(pt.date || pt.label)}</div>
-          <div class="mono down-color">下行 ↓ ${formatBytes(pt.download_bytes, base)}</div>
-          <div class="mono up-color">上行 ↑ ${formatBytes(pt.upload_bytes, base)}</div>
-          <div class="mono" style="margin-block-start:3px;border-block-start:1px solid var(--border);padding-block-start:3px">
-            总计 ${formatBytes(pt.total_bytes, base)}
-          </div>
-          ${pt.oci_weighted_bytes > 0 ? `<div class="mono meta-text">OCI 加权 ${formatBytes(pt.oci_weighted_bytes, base)}</div>` : ""}
-        `;
-        tooltip.hidden = false;
-        positionTooltip(e);
+      const idx = Number(group.dataset.idx);
+      group.addEventListener("mouseenter", (e) => showTooltipFor(idx, e.clientX, e.clientY));
+      group.addEventListener("mousemove", (e) => showTooltipFor(idx, e.clientX, e.clientY));
+      group.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showTooltipFor(idx, e.clientX, e.clientY);
       });
-      group.addEventListener("mousemove", positionTooltip);
       group.addEventListener("mouseleave", () => {
-        tooltip.hidden = true;
+        if (window.matchMedia("(hover: hover)").matches) tooltip.hidden = true;
       });
     });
   }
@@ -1421,7 +1459,7 @@
                   <div id="${uriId}" class="uri-box">${escapeHtml(link.uri)}</div>
                 </div>
 
-                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <div class="qr-action-row">
                   <span class="copy-control">
                     <button
                       type="button"
@@ -1668,6 +1706,39 @@
   });
 
   // --- Bootstrap ---
+
+  // Dismiss touch trend tooltip on outside tap & re-render crisp SVG on resize/orientation change
+  document.addEventListener("click", () => {
+    const tip = $("trend-tooltip");
+    if (tip) tip.hidden = true;
+  });
+
+  let trendResizeRaf = 0;
+  function scheduleTrendResize() {
+    if (trendResizeRaf) return;
+    trendResizeRaf = requestAnimationFrame(() => {
+      trendResizeRaf = 0;
+      const host = $("trend-chart");
+      if (!host || !state.dashboard) return;
+      const wrap = host.closest(".trend-chart-wrap") || host;
+      const w = Math.max(260, Math.floor(wrap.clientWidth || host.clientWidth || 0));
+      const rendered = Number(host.dataset.renderedWidth || 0);
+      if (w > 0 && Math.abs(w - rendered) > 6) {
+        const tip = $("trend-tooltip");
+        if (tip) tip.hidden = true;
+        renderTrendChart(state.dashboard);
+      }
+    });
+  }
+
+  if (typeof ResizeObserver === "function") {
+    const trendWrap = document.querySelector(".trend-chart-wrap") || $("trend-chart");
+    if (trendWrap) {
+      const ro = new ResizeObserver(scheduleTrendResize);
+      ro.observe(trendWrap);
+    }
+  }
+  window.addEventListener("resize", scheduleTrendResize, { passive: true });
 
   setupDialogs();
   setupFormValidationSync($("form-add-device"));

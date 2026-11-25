@@ -181,3 +181,13 @@ def test_modern_web_ui_invariants_and_zero_external_cdns() -> None:
     assert 'command="--copy"' in html
     assert "moveBefore" in js
     assert 'popover", "manual"' in js
+
+    # Mobile responsive adaptation invariants (stacked table cards, touch targets, safe areas, live SVG)
+    assert "viewport-fit=cover" in html
+    assert 'class="mobile-sort-bar"' in html
+    assert "container: devices-table / inline-size;" in css
+    assert "@container devices-table (width < 580px)" in css
+    assert "@media (pointer: coarse)" in css
+    assert "env(safe-area-inset-bottom" in css
+    assert "preserveAspectRatio=\"none\"" not in js
+    assert "ResizeObserver" in js
