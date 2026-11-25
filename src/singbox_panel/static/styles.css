@@ -2026,71 +2026,54 @@
 
   /* QR Modal tabs & panels */
   .qr-tabs {
+    display: flex;
+    flex-wrap: wrap;
     gap: 6px;
     margin-block-end: 16px;
     border-block-end: 1px solid var(--border);
-    padding-block-end: 4px;
+    padding-block-end: 10px;
   }
 
   .qr-tab {
     position: relative;
-    flex: none;
-    scroll-snap-align: start;
-    border: 1px solid transparent;
-    background: transparent;
+    flex: 0 1 auto;
+    border: 1px solid var(--border);
+    background: var(--surface-elevated);
     color: var(--text-muted);
     padding-block: 7px;
-    padding-inline: 13px;
-    border-radius: 8px 8px 0 0;
-    font-size: 0.82rem;
+    padding-inline: 12px;
+    border-radius: 8px;
+    font-size: 0.8rem;
     font-weight: 600;
     cursor: pointer;
 
     &:hover {
       color: var(--text);
+      border-color: var(--border-strong);
     }
 
     &[aria-selected="true"] {
       color: var(--primary);
-      background: color-mix(in oklab, var(--primary) 10%, transparent);
+      background: color-mix(in oklab, var(--primary) 12%, var(--surface));
+      border-color: color-mix(in oklab, var(--primary) 45%, transparent);
 
       &::after {
         content: "";
         position: absolute;
-        inset: auto 0 -5px;
-        border-block-end: 3px solid var(--primary);
+        inset: auto 10px 2px;
+        border-block-end: 2.5px solid var(--primary);
       }
     }
   }
 
   @media (max-width: 640px) {
-    .qr-tabs {
-      flex-wrap: wrap;
-      overflow-x: visible;
-      mask: none;
-      animation: none;
-      gap: 6px;
-      padding-block-end: 10px;
-    }
-
     .qr-tab {
       flex: 1 1 auto;
       text-align: center;
       padding-block: 7px;
       padding-inline: 10px;
-      border-radius: 8px;
-      border: 1px solid var(--border);
       font-size: 0.78rem;
       min-block-size: max(36px, calc(var(--target-size) - 4px));
-
-      &[aria-selected="true"] {
-        border-color: color-mix(in oklab, var(--primary) 45%, transparent);
-
-        &::after {
-          inset: auto 10px 2px;
-          border-block-end-width: 2.5px;
-        }
-      }
     }
   }
 
@@ -2101,6 +2084,16 @@
 
   .qr-tabpanel {
     grid-area: 1 / 1;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Critical: hidden="until-found" uses content-visibility:hidden (not display:none),
+     so inactive stacked grid panels MUST disable pointer-events & visibility! */
+  .qr-tabpanel[hidden] {
+    pointer-events: none;
+    visibility: hidden;
+    z-index: 0;
   }
 
   .qr-layout {

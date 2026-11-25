@@ -384,7 +384,9 @@
     const field = Object.assign(document.createElement("textarea"), { value: text });
     field.setAttribute("readonly", "");
     field.style.cssText = "position:fixed;inset-block-start:0;opacity:0";
-    document.body.append(field);
+    // Mount inside active modal <dialog> if open (body is inert behind showModal())
+    const host = document.querySelector("dialog[open]") || document.body;
+    host.append(field);
     field.select();
     try {
       return document.execCommand("copy");

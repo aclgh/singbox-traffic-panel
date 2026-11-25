@@ -196,3 +196,5 @@ def test_modern_web_ui_invariants_and_zero_external_cdns() -> None:
     assert "env(safe-area-inset-bottom" in css
     assert "preserveAspectRatio=\"none\"" not in js
     assert "ResizeObserver" in js
+    assert ".qr-tabpanel[hidden]" in css
+    assert "pointer-events: none;" in css
