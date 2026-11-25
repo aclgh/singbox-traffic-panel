@@ -73,7 +73,7 @@ def test_end_to_end_dashboard_and_device_lifecycle_api(tmp_path: Path) -> None:
         # 1. Index HTML served locally
         home = client.get("/")
         assert home.status_code == 200
-        assert "sing-box Traffic Panel" in home.text
+        assert "sing-box 流量看板" in home.text
 
         # 2. Health check
         health = client.get("/api/health").json()
@@ -178,9 +178,14 @@ def test_modern_web_ui_invariants_and_zero_external_cdns() -> None:
 
     # Sortable table + moveBefore + copy command + manual popover toasts
     assert 'command="--sort"' in html
-    assert 'command="--copy"' in html
+    assert 'command="--copy"' in js
     assert "moveBefore" in js
     assert 'popover", "manual"' in js
+
+    # Clean dashboard copy (no internal loopback/collector/SQLite jargon)
+    for tech_jargon in ("仅本地回环", "仅回环", "v2ray_api 精确统计", "SQLite WAL", "自动落盘", "每 10~30 秒落盘"):
+        assert tech_jargon not in html
+        assert tech_jargon not in js
 
     # Mobile responsive adaptation invariants (stacked table cards, touch targets, safe areas, live SVG)
     assert "viewport-fit=cover" in html

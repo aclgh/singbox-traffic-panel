@@ -777,47 +777,26 @@
   // --- Rendering ---
 
   function renderTopbar(data) {
-    const meta = data.server_meta;
-    const col = data.collector;
-
-    const lb = $("loopback-badge");
-    lb.textContent = meta.loopback_only
-      ? `${meta.bind_host}:${meta.bind_port} 仅本地回环`
-      : `${meta.bind_host}:${meta.bind_port}`;
-    lb.className = `pill ${meta.loopback_only ? "pill-secure" : "pill-warn"}`;
-
-    const cb = $("collector-badge");
-    const srcMap = {
-      v2ray_api: "v2ray_api 精确统计",
-      clash_api: "clash_api WebSocket",
-      mock: "Demo 模拟数据",
-    };
-    const srcText = srcMap[col.active_source] || col.active_source;
-    cb.textContent = col.connected ? `● ${srcText}` : `○ ${srcText} (未连接)`;
-    cb.className = `pill ${col.connected ? "pill-ok" : "pill-warn"}`;
-
-    $("last-flush-text").textContent = col.last_flush_at
-      ? `每 ${col.flush_interval_seconds}s 落盘 · 上次 ${formatShortTime(col.last_flush_at)}`
-      : `每 ${col.flush_interval_seconds}s 自动落盘`;
+    const col = data.collector || {};
+    const demoBadge = $("demo-badge");
+    if (demoBadge) {
+      demoBadge.hidden = col.active_source !== "mock";
+    }
 
     const banner = $("diagnostic-banner");
     const messages = [];
     let isDanger = false;
     if (col.last_error) {
-      messages.push(`采集器连接异常 (${col.active_source}): ${col.last_error}`);
-    }
-    if (col.diagnostics?.hint) {
+      messages.push("流量数据暂时无法同步，请稍后刷新重试。");
+    } else if (col.active_source === "mock" && col.diagnostics?.hint) {
       messages.push(col.diagnostics.hint);
-    }
-    if (data.singbox_health?.error) {
-      messages.push(`sing-box 配置检查: ${data.singbox_health.error}`);
     }
     if (data.oci_quota?.alert_level === "danger") {
       messages.push(
-        `OCI 免费额度红线预警：本月估算已达 ${data.oci_quota.percent}%（${formatBytes(
+        `本月流量已接近上限：${data.oci_quota.percent}%（${formatBytes(
           data.oci_quota.used_bytes,
           data.oci_quota.unit_base
-        )} / ${data.oci_quota.monthly_limit_tb} TB）！`
+        )} / ${data.oci_quota.monthly_limit_tb} TB）`
       );
       isDanger = true;
     }
@@ -982,7 +961,7 @@
     const devices = data.devices || [];
 
     if (!devices.length) {
-      devicesTbody.innerHTML = `<tr><td colspan="5" class="empty-cell">暂无设备数据，点击右上角「新增设备」或从 sing-box 配置同步。</td></tr>`;
+      devicesTbody.innerHTML = `<tr><td colspan="5" class="empty-cell">暂无设备，点击右上角「新增设备」添加。</td></tr>`;
       return;
     }
 
@@ -1186,48 +1165,19 @@
     });
   }
 
-  function renderOpsSection(data) {
-    $("ssh-tunnel-cmd").textContent = data.server_meta.ssh_tunnel_cmd;
-    const h = data.singbox_health || {};
-    $("backups-count-pill").textContent = `${h.backups_count || 0} 备份`;
-
-    const matchedText = (h.matched_protocols || [])
-      .map(
-        (m) =>
-          `${escapeHtml(m.label)}: ${
-            m.matched_inbound_tag
-              ? `✓ ${escapeHtml(m.matched_inbound_tag)} (:${escapeHtml(m.listen_port || "?")})`
-              : "✗ 未匹配"
-          }`
-      )
-      .join("<br/>");
-
-    $("singbox-health-grid").innerHTML = `
-      <div class="health-item">
-        <div class="h-label">sing-box 配置文件</div>
-        <div class="h-val mono">${escapeHtml(h.config_path || "--")}</div>
-      </div>
-      <div class="health-item">
-        <div class="h-label">API 探测状态</div>
-        <div class="h-val">
-          v2ray_api: ${h.v2ray_api_enabled ? `<span class="up-color">已启用</span>` : `<span class="meta-text">未配置</span>`}
-          &nbsp;·&nbsp;
-          clash_api: ${h.clash_api_enabled ? `<span class="up-color">已启用</span>` : `<span class="meta-text">未配置</span>`}
-        </div>
-      </div>
-      <div class="health-item" style="grid-column: 1 / -1">
-        <div class="h-label">已绑定入站协议</div>
-        <div class="h-val mono" style="font-size:0.78rem">${matchedText || "--"}</div>
-      </div>
-    `;
-  }
+  const AUDIT_ACTION_LABELS = {
+    "device.create": "新增设备",
+    "device.revoke": "吊销设备",
+    "device.restore": "恢复设备",
+    "device.delete": "删除记录",
+    "singbox.sync": "同步设备",
+  };
 
   async function refreshAudit() {
     try {
       const audit = await apiFetch("/api/audit");
       const list = $("audit-list");
       const logs = audit.logs || [];
-      $("backups-count-pill").textContent = `${(audit.backups || []).length} 备份`;
       if (!logs.length) {
         list.innerHTML = `<div class="empty-cell">暂无操作记录</div>`;
         return;
@@ -1239,7 +1189,7 @@
             <div class="audit-row">
               <div>
                 <div>
-                  <span class="pill ${item.success ? "pill-ok" : "pill-danger"}">${escapeHtml(item.action)}</span>
+                  <span class="pill ${item.success ? "pill-ok" : "pill-danger"}">${escapeHtml(AUDIT_ACTION_LABELS[item.action] || item.action)}</span>
                   <strong class="mono" style="margin-inline-start:6px">${escapeHtml(item.target)}</strong>
                 </div>
                 <div class="audit-detail">${escapeHtml(item.detail)}</div>
@@ -1270,10 +1220,9 @@
       renderDevicesTable(data);
       renderProtocolDonut(data);
       renderTrendChart(data);
-      renderOpsSection(data);
     } catch (err) {
       if (err.name === "AbortError") return;
-      showToast(`加载仪表盘失败: ${err.message}`, "error");
+      showToast(`加载失败: ${err.message}`, "error");
     }
   }
 
@@ -1296,7 +1245,7 @@
             <span class="dot" style="background:${escapeHtml(p.color)}" aria-hidden="true"></span>
             <div>
               <div style="font-weight:600">${escapeHtml(p.label)}</div>
-              <div class="meta-text mono">inbound: ${escapeHtml(p.inbound_tag)} · OCI ${p.oci_multiplier}×</div>
+              <div class="meta-text mono">OCI 计费 ${p.oci_multiplier}×</div>
             </div>
           </label>
         `
@@ -1335,7 +1284,7 @@
 
     const submitBtn = $("btn-submit-add");
     submitBtn.disabled = true;
-    submitBtn.textContent = "校验并写入中...";
+    submitBtn.textContent = "创建中...";
     try {
       const res = await apiFetch("/api/devices", {
         method: "POST",
@@ -1346,7 +1295,7 @@
       if (res.share) {
         openQrModal(res.share);
       } else {
-        showToast(`设备 ${res.device.name} 已创建并生效（${res.reload}）`);
+        showToast(`设备 ${res.device.name} 已创建`);
       }
     } catch (err) {
       inlineErr.textContent = `创建失败: ${err.message}`;
@@ -1361,10 +1310,8 @@
 
   function openQrModal(bundle) {
     state.qrBundle = bundle;
-    $("modal-qr-title").textContent = `设备凭据：${bundle.device.name}`;
-    $("modal-qr-subtitle").textContent = bundle.device.note
-      ? `${bundle.device.note} · 本地离线生成二维码`
-      : "本地离线生成二维码，凭据绝不离开本机";
+    $("modal-qr-title").textContent = `设备连接：${bundle.device.name}`;
+    $("modal-qr-subtitle").textContent = bundle.device.note || "扫码或复制链接导入客户端";
 
     const tabsHost = $("qr-tabs");
     const panelsHost = $("qr-panels");
@@ -1502,7 +1449,7 @@
           <span class="copy-control">
             <button type="button" class="btn btn-primary copy-button" command="--copy" commandfor="qr-sb-json">
               <span class="copy-icon" aria-hidden="true"></span>
-              <span>复制 sing-box 客户端 Outbounds JSON</span>
+              <span>复制 JSON 配置</span>
             </button>
             <span class="copy-tip" role="status"></span>
           </span>
@@ -1668,18 +1615,18 @@
     btn.disabled = true;
     btn.textContent = "吊销中...";
     try {
-      const res = await apiFetch(`/api/devices/${encodeURIComponent(target)}/revoke`, {
+      await apiFetch(`/api/devices/${encodeURIComponent(target)}/revoke`, {
         method: "POST",
       });
       await closeTopLayerDialog($("modal-revoke"));
-      showToast(`已吊销 ${target} 并重载 sing-box（${res.reload}）`);
+      showToast(`已吊销 ${target}`);
       await Promise.all([refreshDashboard(), refreshAudit()]);
     } catch (err) {
       errBox.textContent = `吊销失败: ${err.message}`;
       errBox.hidden = false;
     } finally {
       btn.disabled = false;
-      btn.textContent = "确认吊销并重载";
+      btn.textContent = "确认吊销";
       state.pendingRevoke = null;
     }
   });

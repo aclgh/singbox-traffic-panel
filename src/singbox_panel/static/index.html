@@ -12,8 +12,8 @@
       }
     } catch {}
   </script>
-  <title>sing-box 流量监控与凭据后台</title>
-  <link rel="stylesheet" href="/static/styles.css?v=2" />
+  <title>sing-box 流量看板</title>
+  <link rel="stylesheet" href="/static/styles.css?v=3" />
 </head>
 <body>
   <a href="#main-content" class="skip-link">跳至主要内容</a>
@@ -37,11 +37,9 @@
             </svg>
           </div>
           <div class="brand-copy">
-            <h1>sing-box Traffic Panel</h1>
-            <div class="subtitle">
-              <span id="loopback-badge" class="pill pill-secure">127.0.0.1 仅回环</span>
-              <span id="collector-badge" class="pill pill-muted">采集中...</span>
-              <span id="last-flush-text" class="meta-text">等待首次采集</span>
+            <div class="brand-title-line">
+              <h1>sing-box 流量看板</h1>
+              <span id="demo-badge" class="pill pill-muted" hidden>演示模式</span>
             </div>
           </div>
         </div>
@@ -77,7 +75,7 @@
         </div>
 
         <div class="topbar-btn-group">
-          <button id="btn-flush" type="button" class="btn btn-secondary" title="立即采集并落盘">
+          <button id="btn-flush" type="button" class="btn btn-secondary" title="刷新最新流量数据">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
               <path d="M21 12a9 9 0 1 1-2.64-6.36" />
               <polyline points="21 3 21 9 15 9" />
@@ -104,7 +102,7 @@
       <section class="card oci-card" aria-labelledby="oci-heading">
         <div class="oci-header">
           <div>
-            <div id="oci-heading" class="section-eyebrow">OCI ALWAYS FREE · 本月 10 TB 红线预警</div>
+            <div id="oci-heading" class="section-eyebrow">OCI 免费额度 · 本月 10 TB</div>
             <div class="oci-headline">
               <span id="oci-used" class="oci-big-num mono">--</span>
               <span class="oci-divider" aria-hidden="true">/</span>
@@ -179,10 +177,10 @@
           </article>
 
           <article class="card kpi-card">
-            <div class="kpi-label">设备凭据状态</div>
+            <div class="kpi-label">已启用设备</div>
             <div id="kpi-devices-count" class="kpi-value mono">--</div>
             <div class="kpi-sub">
-              <button id="btn-sync-config" type="button" class="link-btn">从 sing-box 配置重新同步</button>
+              <button id="btn-sync-config" type="button" class="link-btn">同步设备列表</button>
             </div>
           </article>
         </div>
@@ -194,7 +192,7 @@
           <div class="card-header">
             <div>
               <h2 id="devices-heading">设备流量与凭据</h2>
-              <p class="card-desc">点击列头可按设备名、上行、下行或总流量排序，支持一键签发离线二维码与吊销访问。</p>
+              <p class="card-desc">查看各设备流量、生成连接二维码或管理访问权限</p>
             </div>
             <span id="devices-range-pill" class="pill pill-muted">本月</span>
           </div>
@@ -250,8 +248,8 @@
         <article class="card protocol-card">
           <div class="card-header">
             <div>
-              <h2>协议分布</h2>
-              <p class="card-desc">各入站协议原始流量及 OCI 加权占比</p>
+              <h2>线路分布</h2>
+              <p class="card-desc">各线路流量与 OCI 计费占比</p>
             </div>
             <div
               id="donut-mode-toggle"
@@ -277,7 +275,6 @@
         <div class="card-header">
           <div>
             <h2 id="trend-title">本月每日流量趋势</h2>
-            <p class="card-desc">SQLite WAL 持久化按小时聚合（每 10~30 秒落盘，服务重启不丢数据）</p>
           </div>
           <div class="chart-legend">
             <span><i class="dot dot-down" aria-hidden="true"></i>下行</span>
@@ -290,46 +287,16 @@
         </div>
       </section>
 
-      <!-- Footer Ops / Security / Audit Section -->
-      <section class="ops-grid">
-        <article class="card ops-card">
-          <div class="card-header">
-            <div>
-              <h2>安全隧道与 sing-box 状态</h2>
-              <p class="card-desc">仅监听 127.0.0.1，外网不可扫描，日常通过 SSH 端口转发安全访问</p>
-            </div>
+      <!-- Recent Activity Log -->
+      <section class="card ops-card" aria-labelledby="audit-heading">
+        <div class="card-header">
+          <div>
+            <h2 id="audit-heading">操作记录</h2>
           </div>
-          <div class="ssh-box">
-            <code id="ssh-tunnel-cmd">ssh -L 8088:127.0.0.1:8088 root@your-sg-vps</code>
-            <span class="copy-control">
-              <button
-                type="button"
-                class="btn btn-secondary btn-sm copy-button"
-                command="--copy"
-                commandfor="ssh-tunnel-cmd"
-                aria-label="复制 SSH 隧道命令"
-              >
-                <span class="copy-icon" aria-hidden="true"></span>
-                <span>复制</span>
-              </button>
-              <span class="copy-tip" role="status"></span>
-            </span>
-          </div>
-          <div id="singbox-health-grid" class="health-grid"></div>
-        </article>
-
-        <article class="card ops-card">
-          <div class="card-header">
-            <div>
-              <h2>凭据与配置审计日志</h2>
-              <p class="card-desc">每次修改配置前自动备份并执行 sing-box check</p>
-            </div>
-            <span id="backups-count-pill" class="pill pill-muted">0 备份</span>
-          </div>
-          <div id="audit-list" class="audit-list">
-            <div class="empty-cell">暂无操作记录</div>
-          </div>
-        </article>
+        </div>
+        <div id="audit-list" class="audit-list">
+          <div class="empty-cell">暂无操作记录</div>
+        </div>
       </section>
     </main>
   </div>
@@ -367,7 +334,7 @@
 
         <div class="form-group">
           <label for="input-device-note">备注（可选）</label>
-          <span id="device-note-hint" class="field-hint">用于区分设备用途，不会写入 sing-box 凭据。</span>
+          <span id="device-note-hint" class="field-hint">用于区分设备用途</span>
           <input
             id="input-device-note"
             name="note"
@@ -379,22 +346,22 @@
         </div>
 
         <fieldset class="form-fieldset">
-          <legend>开通协议 <span class="req" aria-hidden="true">*</span></legend>
+          <legend>开通线路 <span class="req" aria-hidden="true">*</span></legend>
           <div id="add-protocols-list" class="checkbox-group"></div>
         </fieldset>
 
         <details class="advanced-box">
-          <summary>高级选项：自定义 UUID / 密码（留空自动生成强随机密钥）</summary>
+          <summary>高级选项：自定义 UUID / 密码（留空自动生成）</summary>
           <div class="advanced-fields">
             <div class="form-group">
               <label for="input-vless-uuid">自定义 VLESS UUID</label>
-              <span id="vless-uuid-hint" class="field-hint">标准 36 位 UUIDv4 格式，留空则自动生成。</span>
+              <span id="vless-uuid-hint" class="field-hint">标准 36 位 UUID 格式，留空自动生成</span>
               <input
                 id="input-vless-uuid"
                 name="vless_uuid"
                 type="text"
                 pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-                placeholder="留空自动生成 UUIDv4"
+                placeholder="留空自动生成"
                 autocomplete="off"
                 aria-describedby="vless-uuid-hint"
                 data-error="vless-uuid-error"
@@ -405,7 +372,7 @@
             </div>
             <div class="form-group">
               <label for="input-hy2-password">自定义 Hysteria2 密码</label>
-              <span id="hy2-pwd-hint" class="field-hint">留空则自动生成 192-bit URL 安全随机密码。</span>
+              <span id="hy2-pwd-hint" class="field-hint">留空自动生成随机密码</span>
               <input
                 id="input-hy2-password"
                 name="hy2_password"
@@ -417,10 +384,6 @@
             </div>
           </div>
         </details>
-
-        <div class="safety-note">
-          写入前自动执行：先落盘当前流量 → 备份 <code>config.json</code> → 执行 <code>sing-box check</code> → 平滑重载，失败自动回滚。
-        </div>
 
         <div id="add-form-error" class="form-inline-error" role="alert" hidden></div>
       </div>
@@ -436,8 +399,8 @@
   <dialog id="modal-qr" class="panel-dialog dialog-wide" closedby="any" aria-labelledby="modal-qr-title">
     <div class="dialog-header">
       <div>
-        <h1 id="modal-qr-title">客户端凭据与二维码</h1>
-        <p id="modal-qr-subtitle" class="dialog-sub">本地离线生成二维码，凭据绝不离开本机</p>
+        <h1 id="modal-qr-title">设备连接二维码</h1>
+        <p id="modal-qr-subtitle" class="dialog-sub">扫码或复制链接导入客户端</p>
       </div>
       <button type="button" class="icon-close" command="close" commandfor="modal-qr" autofocus aria-label="关闭弹窗">&times;</button>
     </div>
@@ -456,22 +419,22 @@
   <!-- Native Modal Dialog 3: Confirm Revoke (Destructive -> autofocus safe Cancel button!) -->
   <dialog id="modal-revoke" class="panel-dialog" closedby="any" aria-labelledby="modal-revoke-title">
     <div class="dialog-header">
-      <h1 id="modal-revoke-title">确认吊销设备凭据</h1>
+      <h1 id="modal-revoke-title">确认吊销设备</h1>
       <button type="button" class="icon-close" command="close" commandfor="modal-revoke" aria-label="关闭弹窗">&times;</button>
     </div>
     <div class="dialog-body">
       <p class="confirm-text">
-        确定立即吊销设备 <strong id="revoke-target-name" class="mono"></strong> 的访问凭据吗？
+        确定立即停用设备 <strong id="revoke-target-name" class="mono"></strong> 的访问权限吗？
       </p>
       <ul class="confirm-list">
-        <li>将从 <code>sing-box</code> 的 VLESS / Hysteria2 入站中移除该设备并重载服务。</li>
-        <li>历史流量记录将<strong>完整保留</strong>在 SQLite 数据库中，不影响本月 OCI 额度汇总。</li>
-        <li>日后可随时一键「恢复换密」重新签发全新密钥。</li>
+        <li>停用后该设备将立即无法继续连接。</li>
+        <li>历史流量统计将继续保留，不影响本月额度汇总。</li>
+        <li>后续可随时一键「恢复换密」重新启用。</li>
       </ul>
       <div id="revoke-error" class="form-inline-error" role="alert" hidden></div>
       <div class="dialog-footer">
         <button type="button" class="btn btn-secondary" command="close" commandfor="modal-revoke" autofocus>取消</button>
-        <button type="button" id="btn-confirm-revoke" class="btn btn-danger">确认吊销并重载</button>
+        <button type="button" id="btn-confirm-revoke" class="btn btn-danger">确认吊销</button>
       </div>
     </div>
   </dialog>
@@ -484,16 +447,16 @@
     </div>
     <div class="dialog-body">
       <p class="confirm-text">
-        确定从设备列表中删除已吊销的 <strong id="delete-target-name" class="mono"></strong> 吗？历史流量统计仍会继续保留在数据库中。
+        确定从设备列表中删除已吊销的 <strong id="delete-target-name" class="mono"></strong> 吗？历史流量统计仍会保留。
       </p>
       <div id="delete-error" class="form-inline-error" role="alert" hidden></div>
       <div class="dialog-footer">
         <button type="button" class="btn btn-secondary" command="close" commandfor="modal-delete" autofocus>取消</button>
-        <button type="button" id="btn-confirm-delete" class="btn btn-danger">确认删除记录</button>
+        <button type="button" id="btn-confirm-delete" class="btn btn-danger">确认删除</button>
       </div>
     </div>
   </dialog>
 
-  <script src="/static/app.js?v=2"></script>
+  <script src="/static/app.js?v=3"></script>
 </body>
 </html>
