@@ -210,3 +210,75 @@ def test_v2ray_collector_delta_parsing_and_restart_wrap() -> None:
     )
     assert devs3[0].upload_bytes == 200
     assert devs3[0].download_bytes == 800
+
+
+def test_v2ray_collector_idle_inbounds_never_copy_shared_direct_outbound() -> None:
+    from singbox_panel.config import ProtocolConfig
+
+    cfg = AppConfig(
+        protocols=[
+            ProtocolConfig(
+                key="kr_vless",
+                label="KR",
+                protocol_type="vless",
+                inbound_tag="vless-reality-kr",
+                outbound_tags=["direct"],
+                stats_dimension="inbound",
+                oci_multiplier=2.0,
+            ),
+            ProtocolConfig(
+                key="tokyo_vless",
+                label="Tokyo",
+                protocol_type="vless",
+                inbound_tag="vless-reality",
+                outbound_tags=["direct"],
+                stats_dimension="inbound",
+                oci_multiplier=2.0,
+            ),
+            ProtocolConfig(
+                key="sg_hysteria2",
+                label="SG Hy2",
+                protocol_type="hysteria2",
+                inbound_tag="hysteria2",
+                outbound_tags=["direct"],
+                stats_dimension="inbound",
+                oci_multiplier=1.0,
+            ),
+            ProtocolConfig(
+                key="cf_vless_ws",
+                label="CF WS",
+                protocol_type="vless",
+                inbound_tag="vless-ws-cf",
+                outbound_tags=["direct"],
+                stats_dimension="inbound",
+                oci_multiplier=1.0,
+            ),
+        ]
+    )
+    cfg.collector.v2ray_api.reset_on_poll = True
+    col = V2RayApiCollector(cfg)
+
+    # Only vless-reality-kr carried traffic; all other 3 inbounds are 0, while outbound>>>direct carries total
+    devs, protos = col.parse_stats_to_deltas(
+        [
+            V2RayStat("user>>>mac>>>traffic>>>uplink", 1_000),
+            V2RayStat("user>>>mac>>>traffic>>>downlink", 9_000),
+            V2RayStat("inbound>>>vless-reality-kr>>>traffic>>>uplink", 1_000),
+            V2RayStat("inbound>>>vless-reality-kr>>>traffic>>>downlink", 9_000),
+            V2RayStat("inbound>>>vless-reality>>>traffic>>>uplink", 0),
+            V2RayStat("inbound>>>vless-reality>>>traffic>>>downlink", 0),
+            V2RayStat("inbound>>>hysteria2>>>traffic>>>uplink", 0),
+            V2RayStat("inbound>>>hysteria2>>>traffic>>>downlink", 0),
+            V2RayStat("inbound>>>vless-ws-cf>>>traffic>>>uplink", 0),
+            V2RayStat("inbound>>>vless-ws-cf>>>traffic>>>downlink", 0),
+            V2RayStat("outbound>>>direct>>>traffic>>>uplink", 1_000),
+            V2RayStat("outbound>>>direct>>>traffic>>>downlink", 9_000),
+        ]
+    )
+    assert len(devs) == 1
+    assert devs[0].upload_bytes == 1_000 and devs[0].download_bytes == 9_000
+    # Strictly ONLY kr_vless should be emitted — ZERO phantom duplication to idle protocols!
+    assert len(protos) == 1
+    assert protos[0].protocol_key == "kr_vless"
+    assert protos[0].source_tag == "vless-reality-kr"
+    assert protos[0].upload_bytes == 1_000 and protos[0].download_bytes == 9_000

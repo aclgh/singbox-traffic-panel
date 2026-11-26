@@ -117,24 +117,19 @@ class V2RayApiCollector(BaseCollector):
                         down += outbound_acc[tag][1]
                         matched_outbounds.add(tag)
                         source_tag = tag
-                # Fallback to inbound if outbound stats weren't enabled in sing-box config
-                if up == 0 and down == 0 and proto.inbound_tag in inbound_acc:
+                # Only fall back to inbound if sing-box exports NO outbound counters at all
+                if not self._seen_outbounds and proto.inbound_tag in inbound_acc:
                     up, down = inbound_acc[proto.inbound_tag]
                     matched_inbounds.add(proto.inbound_tag)
                     source_tag = proto.inbound_tag
             else:
+                # stats_dimension == "inbound": strictly read this protocol's own inbound counter.
+                # NEVER fall back to outbound_tags (e.g. shared "direct") when an inbound is idle (0 bytes),
+                # otherwise every idle protocol duplicates the active traffic!
                 if proto.inbound_tag in inbound_acc:
                     up, down = inbound_acc[proto.inbound_tag]
                     matched_inbounds.add(proto.inbound_tag)
                     source_tag = proto.inbound_tag
-                # Fallback to outbound if inbound stats weren't enabled
-                if up == 0 and down == 0:
-                    for tag in proto.outbound_tags:
-                        if tag in outbound_acc:
-                            up += outbound_acc[tag][0]
-                            down += outbound_acc[tag][1]
-                            matched_outbounds.add(tag)
-                            source_tag = tag
 
             if up > 0 or down > 0:
                 protocol_deltas.append(

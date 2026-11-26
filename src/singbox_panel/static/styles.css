@@ -26,6 +26,11 @@
     font: inherit;
     color: inherit;
   }
+
+  /* Prevent component display rules (e.g. .pill { display: inline-flex }) from revealing [hidden] elements */
+  [hidden]:not([hidden="until-found"]) {
+    display: none !important;
+  }
 }
 
 @layer tokens {
